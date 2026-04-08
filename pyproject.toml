@@ -1,16 +1,25 @@
 [project]
-name = "autotrader"
+name = "trader-ai-system"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fully autonomous multi-agent trading system using LangGraph"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "matplotlib>=3.10.8",
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.2.0",
+    "pydantic>=2.0.0",
     "metatrader5>=5.0.5735",
-    "pandas>=3.0.2",
+    "yfinance>=0.2.0",
+    "apscheduler>=3.10.0",
+    "python-dotenv>=1.0.0",
+    "pandas>=2.0.0",
 ]
 
 [dependency-groups]
 dev = [
+    "pytest>=9.0.3",
+    "hypothesis>=6.0.0",
     "ruff>=0.15.9",
 ]
