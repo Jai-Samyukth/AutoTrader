@@ -1,26 +1,39 @@
 [project]
 name = "trader-ai-system"
-version = "0.1.0"
+version = "0.1.0.dev"
 description = "Fully autonomous multi-agent trading system using LangGraph"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "langgraph>=0.2.0",
-    "langchain>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-anthropic>=0.2.0",
-    "pydantic>=2.0.0",
+    "langchain>=1.2.15",
     "metatrader5>=5.0.5735",
-    "yfinance>=0.2.0",
-    "apscheduler>=3.10.0",
-    "python-dotenv>=1.0.0",
-    "pandas>=2.0.0",
-    "mcp>=1.0.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
 ]
 
+
 [dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "hypothesis>=6.0.0",
-    "ruff>=0.15.9",
-]
+dev = ["pytest>=9.0.3", "ruff>=0.15.9"]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
