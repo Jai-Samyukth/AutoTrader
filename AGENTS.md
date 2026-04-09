@@ -1,784 +1,377 @@
-# Trader AI — Multi-Agent Autonomous Trading System
-> Steering file for you!.
-> Yes, you the Genius.
-## 1. System Overview
-
-Trader AI is a fully autonomous trading system powered by a multi-agent architecture built on **LangChain** and **LangGraph**. It uses two **Model Context Protocol (MCP)** servers to interface with external systems — TradingView for data and MetaTrader 5 for execution. The Orchestrator agent coordinates the entire workflow, making strategic decisions and delegating tasks to specialized sub-agents.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        TRADER AI SYSTEM                                 │
-│                                                                         │
-│  ┌─────────────┐                                                        │
-│  │  Scheduler   │──(cron wake-up)──▶┌──────────────────┐               │
-│  │  Agent (A1)  │◀──(set next run)──│                  │               │
-│  └─────────────┘                    │   ORCHESTRATOR   │               │
-│                                     │     AGENT        │               │
-│  ┌──────────────────────────┐       │                  │               │
-│  │       MCP 1               │◀──────┼─▶┌────────────┐  │               │
-│  │   (TradingView)           │       │  │  Data       │  │               │
-│  │                          │       │  │  Collector  │  │               │
-│  │  • Price Data (OHLCV)    │       │  │  Agent      │  │               │
-│  │  • News Data             │       │  └────────────┘  │               │
-│  │  • Timing Indicators     │       │                  │               │
-│  │    (3/4 available)       │       │  ┌────────────┐  │               │
-│  └──────────────────────────┘       │  │  Technical  │  │               │
-│                                     │  │  Analyst    │  │               │
-│                                     │  │  Agent      │  │               │
-│                                     │  └────────────┘  │               │
-│                                     │                  │               │
-│                                     │  ┌────────────┐  │               │
-│                                     │  │   News      │  │               │
-│                                     │  │  Analyst    │  │               │
-│                                     │  │  Agent      │  │               │
-│                                     │  └────────────┘  │               │
-│                                     │                  │               │
-│                                     │         ┌───────▼───────┐        │
-│                                     │         │   Strategy     │        │
-│                                     │         │   Evaluator    │        │
-│                                     │         │   Agent        │        │
-│                                     │         │  (Yes / No?)   │        │
-│                                     │         └───────┬───────┘        │
-│                                     │                 │                │
-│                                     │          Yes    │    No           │
-│                                     │                 ▼                │
-│                                     │         ┌───────────────┐        │
-│                                     │         │   Risk        │        │
-│                                     │         │   Manager     │        │
-│                                     │         │   Agent       │        │
-│                                     │         │(High Conf?)   │        │
-│                                     │         └───────┬───────┘        │
-│                                     │                 │                │
-│                                     │     High        │    Low         │
-│                                     │     Conf.       ▼    Conf.        │
-│                                     │  ┌─────────────────┐    │         │
-│                                     │  │  Trade          │    │         │
-│                                     │  │  Executor       │    │         │
-│                                     │  │  Agent          │    │         │
-│                                     │  └────────┬────────┘    │         │
-│                                     │           │             │         │
-│                                     │           ▼             │         │
-│                                     │  ┌─────────────────┐    │         │
-│                                     │  │     MCP 2        │    │         │
-│                                     │  │ (MetaTrader 5)   │    │         │
-│                                     │  │                  │    │         │
-│                                     │  │  • Place Orders  │    │         │
-│                                     │  │  • Close Orders  │    │         │
-│                                     │  │  • Modify SL/TP  │    │         │
-│                                     │  │  • Get Positions │    │         │
-│                                     │  │  • Account Info  │    │         │
-│                                     │  └─────────────────┘    │         │
-│                                     │                          │         │
-│                                     └──────────┬───────────────┘         │
-│                                                │                         │
-│                                    No / Low ◀──┘                         │
-│                                    Confidence                            │
-│                                        │                                │
-│                                        ▼                                │
-│                                   ┌──────────┐                          │
-│                                   │Scheduler │──(cron: next analysis)──▶│
-│                                   │ Agent A1 │                          │
-│                                   └──────────┘                          │
-│                                                                        │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-## 2. MCP Server Definitions
-
-### MCP 1 — TradingView Data Server
-
-Responsible for fetching all market data, news, and technical indicators.
-
-| Tool Name | Description | Input Parameters | Output |
-|-----------|-------------|------------------|--------|
-| `tv_get_ohlcv` | Get OHLCV candle data | `symbol`, `timeframe`, `count` | `List[Candle]` |
-| `tv_get_news` | Get latest news for symbol | `symbol`, `limit` | `List[NewsItem]` |
-| `tv_get_indicator` | Get technical indicator value | `symbol`, `timeframe`, `indicator_name`, `params` | `Dict` |
-| `tv_get_available_indicators` | List available indicators | — | `List[str]` |
-| `tv_get_market_summary` | Get market overview/sentiment | `symbol` | `Dict` |
-
-**Indicator Notes:** The system has access to 3 out of 4 timing indicators as noted in the architecture. The missing indicator should be flagged in strategy evaluation as a confidence reducer.
-
-### MCP 2 — MetaTrader 5 Execution Server
-
-Responsible for all order management and account interactions via the MT5 Python API.
-
-| Tool Name | Description | Input Parameters | Output |
-|-----------|-------------|------------------|--------|
-| `mt5_initialize` | Initialize MT5 connection | `login`, `password`, `server`, `path` | `bool` |
-| `mt5_get_account_info` | Get account balance, equity, margin | — | `AccountInfo` |
-| `mt5_get_positions` | Get open positions | `symbol?` | `List[Position]` |
-| `mt5_get_orders` | Get pending orders | `symbol?` | `List[Order]` |
-| `mt5_order_send` | Place/modify/close an order | `order_request: OrderRequest` | `OrderSendResult` |
-| `mt5_buy` | Open a buy position | `symbol`, `volume`, `sl`, `tp`, `comment`, `magic` | `OrderSendResult` |
-| `mt5_sell` | Open a sell position | `symbol`, `volume`, `sl`, `tp`, `comment`, `magic` | `OrderSendResult` |
-| `mt5_close_position` | Close a position by ticket | `ticket` | `bool` |
-| `mt5_close_all` | Close all open positions | `symbol?` | `int` (count closed) |
-| `mt5_modify_position` | Modify SL/TP of position | `ticket`, `sl`, `tp` | `bool` |
-| `mt5_get_symbol_info` | Get symbol specifications | `symbol` | `SymbolInfo` |
-| `mt5_get_ticks` | Get recent tick data | `symbol`, `count` | `List[Tick]` |
-| `mt5_shutdown` | Shutdown MT5 connection | — | `bool` |
+# AGENTS.md
+> Universal Steering & Governance Document for AI-Powered Coding Agents
+> Version: 1.0.0 | Status: Authoritative | Scope: All Codebases
 
 ---
 
-## 3. Agent Definitions
+## 1. Purpose & Scope
 
-### 3.1 Orchestrator Agent
+### 1.1 Purpose
+This document defines the operating rules, engineering standards, and behavioral constraints for any AI-powered coding agent operating within a software system. It is the authoritative reference for how the agent reasons, acts, communicates, and produces output.
 
-| Property | Value |
-|----------|-------|
-| **Role** | Central decision-maker and task delegator |
-| **LLM** | GPT-4o / Claude 3.5 Sonnet (high reasoning) |
-| **Framework** | LangGraph `StateGraph` — acts as the supervisor node |
-| **Tools** | None directly — delegates to sub-agents via tool calls |
-| **State** | Full `TraderState` (see Section 5) |
-| **Behavior** | Reads current state, decides which agent to invoke next, evaluates final strategy and risk decisions |
+### 1.2 Agent Responsibilities
+The agent is responsible for:
+- Producing correct, maintainable, and production-grade code and configuration changes.
+- Analyzing existing systems accurately before proposing or applying modifications.
+- Explaining all non-trivial decisions with sufficient clarity for a senior engineer to audit.
+- Flagging ambiguity, risk, and uncertainty before proceeding with irreversible actions.
+- Respecting the architectural and design boundaries of the system it operates within.
 
-**Decision Logic (encoded in prompt + graph edges):**
-```
-START → data_collection → analysis → strategy_eval
-  → [No] → schedule_next
-  → [Yes] → risk_check
-      → [Low Confidence] → schedule_next
-      → [High Confidence] → trade_execution → schedule_next
-```
-
-### 3.2 Data Collector Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Fetch all required market data via MCP 1 |
-| **LLM** | GPT-4o-mini (fast, low cost) |
-| **Framework** | LangChain `create_tool_calling_agent` |
-| **Tools** | All MCP 1 tools |
-| **Input** | `symbols`, `timeframes`, `indicator_list` from state |
-| **Output** | Populates `state.market_data`, `state.news_data`, `state.indicator_data` |
-
-### 3.3 Technical Analyst Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Interpret technical indicators and price action |
-| **LLM** | GPT-4o |
-| **Framework** | LangChain `create_tool_calling_agent` |
-| **Tools** | `tv_get_indicator`, `tv_get_ohlcv` (for additional lookups) |
-| **Input** | `state.indicator_data`, `state.market_data` |
-| **Output** | Populates `state.technical_analysis` with structured assessment |
-
-**Output Structure:**
-```python
-{
-    "trend": "bullish" | "bearish" | "neutral",
-    "strength": 0.0 - 1.0,
-    "key_levels": {"support": [...], "resistance": [...]},
-    "signal": "buy" | "sell" | "hold",
-    "indicators_used": ["RSI", "MACD", "EMA"],
-    "indicators_missing": ["Bollinger Bands"],
-    "reasoning": "..."
-}
-```
-
-### 3.4 News Analyst Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Analyze news sentiment and impact on trade decisions |
-| **LLM** | GPT-4o |
-| **Framework** | LangChain `create_tool_calling_agent` |
-| **Tools** | `tv_get_news` (for additional lookups if needed) |
-| **Input** | `state.news_data` |
-| **Output** | Populates `state.news_analysis` with sentiment assessment |
-
-**Output Structure:**
-```python
-{
-    "sentiment": "bullish" | "bearish" | "neutral",
-    "impact_level": "high" | "medium" | "low",
-    "key_events": ["Fed rate decision: hawkish", "..."],
-    "conflict_with_technical": False,
-    "reasoning": "..."
-}
-```
-
-### 3.5 Strategy Evaluator Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Determines if a trade strategy is triggered (Yes/No gate) |
-| **LLM** | GPT-4o |
-| **Framework** | LangChain `create_tool_calling_agent` (no external tools) |
-| **Tools** | None — pure reasoning over state |
-| **Input** | `state.technical_analysis`, `state.news_analysis` |
-| **Output** | Populates `state.strategy_decision` |
-
-**Output Structure:**
-```python
-{
-    "strategy_triggered": True | False,
-    "direction": "buy" | "sell" | None,
-    "entry_type": "market" | "limit",
-    "suggested_entry": 1.0850,
-    "reasoning": "..."
-}
-```
-
-### 3.6 Risk Manager Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Evaluates confidence and calculates position sizing |
-| **LLM** | GPT-4o |
-| **Framework** | LangChain `create_tool_calling_agent` |
-| **Tools** | `mt5_get_account_info`, `mt5_get_positions`, `mt5_get_symbol_info` |
-| **Input** | `state.strategy_decision`, `state.technical_analysis`, `state.news_analysis` |
-| **Output** | Populates `state.risk_assessment` |
-
-**Output Structure:**
-```python
-{
-    "confidence": "high" | "medium" | "low",
-    "confidence_score": 0.85,
-    "risk_reward_ratio": 2.5,
-    "position_size_lots": 0.1,
-    "stop_loss": 1.0820,
-    "take_profit": 1.0920,
-    "max_risk_percent": 1.0,
-    "reasons_for_rejection": [],
-    "reasoning": "..."
-}
-```
-
-**Confidence Thresholds:**
-- `high`: score >= 0.75 → proceed to execution
-- `medium`: 0.50 <= score < 0.75 → log but do NOT execute
-- `low`: score < 0.50 → reject entirely
-
-### 3.7 Trade Executor Agent
-
-| Property | Value |
-|----------|-------|
-| **Role** | Execute trades on MT5 via MCP 2 |
-| **LLM** | GPT-4o-mini (execution-focused, minimal reasoning) |
-| **Framework** | LangChain `create_tool_calling_agent` |
-| **Tools** | All MCP 2 tools |
-| **Input** | `state.risk_assessment`, `state.strategy_decision` |
-| **Output** | Populates `state.execution_result` |
-
-**Behavior:** This agent is tightly constrained — it MUST follow the risk parameters exactly. It should NOT make independent trading decisions.
-
-### 3.8 Scheduler Agent (A1)
-
-| Property | Value |
-|----------|-------|
-| **Role** | Manage cron-based wake-up schedules for the orchestrator |
-| **LLM** | None — deterministic logic |
-| **Framework** | Python `APScheduler` / custom cron manager |
-| **Tools** | None |
-| **Input** | `state.analysis_result` (to determine next interval) |
-| **Output** | Sets cron job; populates `state.next_run_time` |
-
-**Scheduling Logic:**
-```python
-def determine_next_interval(state: TraderState) -> str:
-    """
-    Dynamic interval based on market conditions:
-    - High volatility / active trade just executed → 5 min
-    - Strategy triggered but low confidence → 15 min
-    - No strategy triggered, quiet market → 30 min
-    - Outside market hours → next market open
-    """
-```
+### 1.3 Out of Scope — What the Agent MUST NOT Do
+- MUST NOT make infrastructure-level changes without explicit human approval.
+- MUST NOT delete, archive, or deprecate any existing functionality without explicit instruction.
+- MUST NOT introduce external dependencies without justification and confirmation.
+- MUST NOT bypass or disable security controls, validation logic, or access restrictions.
+- MUST NOT infer permission to act outside the stated task scope, even if technically feasible.
+- MUST NOT make assumptions about production data, secrets, or credentials.
+- MUST NOT perform large-scale refactors unless explicitly tasked to do so.
 
 ---
 
-## 4. LangGraph Workflow Definition
+## 2. Core Engineering Principles
 
-```python
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Literal, Annotated
-from operator import add
+### 2.1 Simplicity First
+- MUST prefer the simplest solution that fully satisfies the stated requirements.
+- MUST NOT add abstractions, layers, or patterns unless there is a clear, present justification.
+- Complexity is a liability. Every unit of complexity introduced MUST earn its place.
 
+### 2.2 Modularity
+- Systems MUST be decomposed into well-bounded units with single, clearly defined responsibilities.
+- Modules MUST be independently understandable, testable, and replaceable.
+- Coupling between modules MUST be minimized and made explicit.
 
-class TraderState(TypedDict):
-    # Configuration
-    symbols: list[str]
-    timeframes: list[str]
-    run_id: str
-    timestamp: str
+### 2.3 Separation of Concerns
+- Business logic, data access, validation, and presentation MUST reside in separate, identifiable layers.
+- Cross-cutting concerns (e.g., logging, error handling, authorization) MUST NOT be scattered arbitrarily across the codebase.
 
-    # Data
-    market_data: dict
-    news_data: list[dict]
-    indicator_data: dict
+### 2.4 Clarity Over Cleverness
+- Code MUST be written to be read by humans first and executed by machines second.
+- Clever, terse, or non-obvious constructs MUST be avoided even when they reduce line count.
+- When two approaches yield equal correctness, the more readable one MUST be chosen.
 
-    # Analysis
-    technical_analysis: dict
-    news_analysis: dict
+### 2.5 Explicitness Over Implicit Behavior
+- Behavior MUST be derivable by reading the code, not by inferring from framework conventions or hidden defaults.
+- Default values, fallback behaviors, and conditional branches MUST be stated explicitly.
+- Magic behavior — where outcomes cannot be traced through the code — is prohibited.
 
-    # Decisions
-    strategy_decision: dict
-    risk_assessment: dict
+### 2.6 Determinism
+- Given the same inputs and environment, a system MUST produce the same outputs.
+- Non-deterministic behavior (e.g., random ordering, race conditions, timing-dependent logic) MUST be isolated, documented, and controlled.
 
-    # Execution
-    execution_result: dict
-
-    # Scheduling
-    next_run_time: str
-    next_run_interval: str
-
-    # Logging
-    agent_trace: Annotated[list[str], add]
-    errors: Annotated[list[str], add]
-
-
-def build_graph() -> StateGraph:
-    graph = StateGraph(TraderState)
-
-    # Add nodes
-    graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("data_collector", data_collector_node)
-    graph.add_node("technical_analyst", technical_analyst_node)
-    graph.add_node("news_analyst", news_analyst_node)
-    graph.add_node("strategy_evaluator", strategy_evaluator_node)
-    graph.add_node("risk_manager", risk_manager_node)
-    graph.add_node("trade_executor", trade_executor_node)
-    graph.add_node("scheduler", scheduler_node)
-
-    # Set entry point
-    graph.set_entry_point("orchestrator")
-
-    # Orchestrator → Data Collection
-    graph.add_edge("orchestrator", "data_collector")
-
-    # Data Collection → Parallel Analysis
-    graph.add_edge("data_collector", "technical_analyst")
-    graph.add_edge("data_collector", "news_analyst")
-
-    # Analysis → Strategy Evaluation (join)
-    graph.add_edge("technical_analyst", "strategy_evaluator")
-    graph.add_edge("news_analyst", "strategy_evaluator")
-
-    # Strategy gate
-    graph.add_conditional_edges(
-        "strategy_evaluator",
-        route_strategy,
-        {
-            "yes": "risk_manager",
-            "no": "scheduler",
-        }
-    )
-
-    # Risk gate
-    graph.add_conditional_edges(
-        "risk_manager",
-        route_risk,
-        {
-            "high_confidence": "trade_executor",
-            "low_confidence": "scheduler",
-        }
-    )
-
-    # Execution → Scheduler
-    graph.add_edge("trade_executor", "scheduler")
-
-    # Scheduler → END (cron will restart)
-    graph.add_edge("scheduler", END)
-
-    return graph.compile()
-
-
-def route_strategy(state: TraderState) -> Literal["yes", "no"]:
-    return "yes" if state["strategy_decision"]["strategy_triggered"] else "no"
-
-
-def route_risk(state: TraderState) -> Literal["high_confidence", "low_confidence"]:
-    return (
-        "high_confidence"
-        if state["risk_assessment"]["confidence"] == "high"
-        else "low_confidence"
-    )
-```
+### 2.7 Maintainability as a First-Class Concern
+- Code MUST be written with the assumption that a different engineer will maintain it.
+- Optimizations that harm readability or maintainability MUST NOT be introduced without documented justification.
 
 ---
 
-## 5. MT5 API Wrapper Specification
+## 3. Architecture & Design Rules
 
-The following wrapper classes must be implemented as the backend for MCP 2 tools.
+### 3.1 Respect Existing Architecture
+- MUST understand and adhere to the architectural style already in use within the system.
+- MUST NOT introduce a conflicting architectural pattern without explicit approval.
+- When the existing architecture is ambiguous, MUST ask for clarification before proceeding.
 
-```
-project-root/
-├── mcp_servers/
-│   └── mt5_server/
-│       ├── server.py              # MCP server entry point
-│       ├── mt5_wrapper.py         # Core MT5 API wrapper
-│       ├── models.py              # Pydantic models for MT5 data
-│       └── tools.py               # Tool definitions
-```
+### 3.2 Layering & Abstraction
+- Abstractions MUST represent real conceptual boundaries, not be created speculatively.
+- Each layer MUST have a clear contract defining its inputs, outputs, and responsibilities.
+- Higher layers MUST NOT leak implementation details of lower layers.
+- Abstractions MUST be introduced to reduce duplication or manage complexity — not to follow patterns aesthetically.
 
-### `mt5_wrapper.py` — Required Interface
+### 3.3 Decoupling
+- Components MUST communicate through well-defined interfaces or contracts.
+- Internal implementation details MUST NOT be exposed across boundaries.
+- Hard dependencies between unrelated modules MUST be treated as design defects.
 
-```python
-import MetaTrader5 as mt5
-from typing import Optional
-from pydantic import BaseModel
+### 3.4 Scalability Awareness
+- Design decisions MUST account for growth in data volume, request throughput, and team size.
+- Bottlenecks introduced by design (e.g., forced serialization, single points of failure) MUST be flagged.
+- MUST NOT optimize for scale prematurely, but MUST NOT create designs that structurally prevent scale.
 
-
-class MT5Wrapper:
-    """Singleton wrapper around MetaTrader5 Python API."""
-
-    _instance = None
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
-    def initialize(
-        self,
-        login: int,
-        password: str,
-        server: str,
-        path: Optional[str] = None,
-        timeout: int = 30000,
-    ) -> bool:
-        """Initialize MT5 connection. Must be called before any other method."""
-        ...
-
-    def shutdown(self) -> bool:
-        """Shutdown MT5 connection."""
-        ...
-
-    @property
-    def is_connected(self) -> bool:
-        """Check if MT5 is connected."""
-        ...
-
-    def get_account_info(self) -> dict:
-        """Return account balance, equity, margin, free margin, margin level."""
-        ...
-
-    def get_positions(self, symbol: Optional[str] = None) -> list[dict]:
-        """Get all open positions, optionally filtered by symbol."""
-        ...
-
-    def get_orders(self, symbol: Optional[str] = None) -> list[dict]:
-        """Get pending orders, optionally filtered by symbol."""
-        ...
-
-    def get_symbol_info(self, symbol: str) -> dict:
-        """Get symbol specification: pip size, min lot, max lot, etc."""
-        ...
-
-    def get_ticks(self, symbol: str, count: int = 100) -> list[dict]:
-        """Get recent tick data."""
-        ...
-
-    def buy(
-        self,
-        symbol: str,
-        volume: float,
-        sl: Optional[float] = None,
-        tp: Optional[float] = None,
-        comment: str = "",
-        magic: int = 0,
-        deviation: int = 20,
-    ) -> dict:
-        """
-        Open a BUY position.
-        Returns: {"success": bool, "ticket": int|None, "error": str|None}
-        """
-        ...
-
-    def sell(
-        self,
-        symbol: str,
-        volume: float,
-        sl: Optional[float] = None,
-        tp: Optional[float] = None,
-        comment: str = "",
-        magic: int = 0,
-        deviation: int = 20,
-    ) -> dict:
-        """
-        Open a SELL position.
-        Returns: {"success": bool, "ticket": int|None, "error": str|None}
-        """
-        ...
-
-    def close_position(self, ticket: int) -> dict:
-        """Close a specific position by ticket."""
-        ...
-
-    def close_all(self, symbol: Optional[str] = None) -> dict:
-        """Close all open positions, optionally filtered by symbol."""
-        ...
-
-    def modify_position(
-        self, ticket: int, sl: Optional[float] = None, tp: Optional[float] = None
-    ) -> dict:
-        """Modify stop loss and/or take profit of an open position."""
-        ...
-
-    def place_limit_order(
-        self,
-        symbol: str,
-        order_type: str,  # "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop"
-        volume: float,
-        price: float,
-        sl: Optional[float] = None,
-        tp: Optional[float] = None,
-        comment: str = "",
-        magic: int = 0,
-    ) -> dict:
-        """Place a pending order."""
-        ...
-
-    def cancel_order(self, ticket: int) -> dict:
-        """Cancel a pending order."""
-        ...
-```
-
-### `models.py` — Pydantic Schemas
-
-```python
-from pydantic import BaseModel
-from typing import Optional
-from enum import Enum
-
-
-class OrderType(str, Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-    BUY_LIMIT = "BUY_LIMIT"
-    SELL_LIMIT = "SELL_LIMIT"
-    BUY_STOP = "BUY_STOP"
-    SELL_STOP = "SELL_STOP"
-
-
-class AccountInfo(BaseModel):
-    login: int
-    balance: float
-    equity: float
-    margin: float
-    free_margin: float
-    margin_level: float
-    currency: str
-    leverage: int
-
-
-class Position(BaseModel):
-    ticket: int
-    symbol: str
-    volume: float
-    type: OrderType
-    price_open: float
-    price_current: float
-    sl: Optional[float]
-    tp: Optional[float]
-    profit: float
-    comment: str
-    magic: int
-    time_open: str
-
-
-class OrderRequest(BaseModel):
-    symbol: str
-    volume: float
-    order_type: OrderType
-    price: Optional[float] = None
-    sl: Optional[float] = None
-    tp: Optional[float] = None
-    comment: str = ""
-    magic: int = 0
-    deviation: int = 20
-
-
-class ExecutionResult(BaseModel):
-    success: bool
-    ticket: Optional[int] = None
-    error_code: Optional[int] = None
-    error_message: Optional[str] = None
-    order_id: Optional[int] = None
-
-
-class SymbolInfo(BaseModel):
-    symbol: str
-    bid: float
-    ask: float
-    spread: float
-    pip_size: float
-    min_lot: float
-    max_lot: float
-    lot_step: float
-    digits: int
-    trade_mode: str
-```
+### 3.5 Evolutionary Design
+- Systems MUST be designed to accommodate change with minimal cascading impact.
+- Rigid designs that couple unrelated concerns MUST be flagged and reconsidered.
+- MUST design for the current requirements while preserving the ability to extend without rewriting.
 
 ---
 
-## 6. TradingView MCP Server Specification
+## 4. Code Quality Standards
 
-```
-project-root/
-├── mcp_servers/
-│   └── tradingview_server/
-│       ├── server.py              # MCP server entry point
-│       ├── tv_wrapper.py          # TradingView data fetcher
-│       ├── models.py              # Pydantic models
-│       └── tools.py               # Tool definitions
-```
+### 4.1 Naming
+- All identifiers (variables, functions, modules, types, constants) MUST accurately describe their purpose and scope.
+- Abbreviations MUST NOT be used unless they are universally understood within the domain.
+- Names MUST be consistent with the terminology already used in the codebase.
+- Boolean identifiers MUST be phrased as assertions (e.g., `is_valid`, `has_permission`).
 
-### Data Sources for TV Wrapper
+### 4.2 Structure & Organization
+- Files and modules MUST contain logically cohesive content — not arbitrary groupings.
+- Functions and methods MUST do one thing. If a function does more than one thing, it MUST be decomposed.
+- Nesting depth MUST be minimized. Deep nesting is a signal of unmanaged complexity.
+- Dead code MUST NOT be introduced. Unused code MUST be removed, not commented out.
 
-```python
-class TradingViewWrapper:
-    """
-    Fetches market data. Implementation can use:
-    - TradingView unofficial API (tvDatafeed library)
-    - Yahoo Finance (yfinance library)
-    - Alpha Vantage / Twelve Data API
-    - Custom screener endpoints
-    """
+### 4.3 Avoiding Duplication
+- Logic MUST NOT be duplicated across the codebase. Duplication MUST be consolidated into a single authoritative location.
+- Copy-paste reuse is prohibited. Shared logic MUST be extracted into a reusable unit.
+- Constants and configuration values MUST be defined once and referenced, not repeated inline.
 
-    def get_ohlcv(
-        self, symbol: str, timeframe: str = "1h", count: int = 100
-    ) -> list[dict]:
-        """Return OHLCV candle data."""
-        ...
+### 4.4 Complexity Management
+- Cyclomatic complexity MUST be kept low. Functions with many branches MUST be decomposed or restructured.
+- Long functions are a defect signal. If a function cannot be understood without scrolling, it MUST be refactored.
+- Conditional logic of high complexity MUST be replaced with structured dispatch, lookup, or policy patterns.
 
-    def get_news(self, symbol: str, limit: int = 10) -> list[dict]:
-        """Return recent news articles related to symbol."""
-        ...
-
-    def get_indicator(
-        self, symbol: str, timeframe: str, indicator: str, **params
-    ) -> dict:
-        """
-        Calculate/return technical indicator values.
-        Supported: RSI, MACD, EMA, SMA, Bollinger Bands, ATR, ADX, Stochastic
-        """
-        ...
-
-    def get_available_indicators(self) -> list[str]:
-        """Return list of indicators this system can provide (3 of 4)."""
-        ...
-
-    def get_market_summary(self, symbol: str) -> dict:
-        """Return market overview, sector performance, correlations."""
-        ...
-```
+### 4.5 Comments & Documentation
+- Comments MUST explain *why*, not *what*. Code MUST be self-explanatory at the *what* level.
+- Outdated or misleading comments MUST be removed or corrected immediately.
+- Public interfaces, contracts, and non-obvious invariants MUST be documented.
+- MUST NOT leave TODO or FIXME comments without an associated issue reference and owner.
 
 ---
 
-## 7. Environment Configuration
+## 5. Change Management
 
-```env
-# .env
+### 5.1 Understand Before Modifying
+- MUST fully analyze the existing code, dependencies, and call paths before making any modification.
+- MUST identify all locations affected by a change before applying it.
+- MUST NOT modify code without understanding its current behavior and intent.
 
-# LLM
-OPENAI_API_KEY=sk-...
-# Or for Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
+### 5.2 Incremental Changes
+- Changes MUST be made incrementally. Large, sweeping modifications MUST be broken into discrete, reviewable steps.
+- Each change MUST represent a single logical unit of work.
+- MUST NOT bundle unrelated changes into a single modification.
 
-# MT5
-MT5_LOGIN=12345678
-MT5_PASSWORD=your_password
-MT5_SERVER=Broker-Demo
-MT5_PATH=/path/to/MetaTrader 5/terminal64.exe
+### 5.3 Backward Compatibility
+- Changes to public interfaces, contracts, or data formats MUST preserve backward compatibility unless an explicit breaking change is authorized.
+- Deprecation MUST be communicated explicitly and with a migration path before removal.
+- MUST NOT silently alter the semantics of an existing interface.
 
-# TradingView Data
-TV_DATA_SOURCE=yfinance  # yfinance | alphavantage | tvdatafeed
-ALPHA_VANTAGE_KEY=...
+### 5.4 Impact Assessment
+- Before applying any change, MUST explicitly state: what is changing, what depends on it, and what could break.
+- High-risk changes MUST be flagged and require human confirmation before proceeding.
+- MUST NOT assume that a change is isolated without verifying its dependency graph.
 
-# Scheduler
-DEFAULT_ANALYSIS_INTERVAL=900  # seconds (15 min)
-MARKET_OPEN_HOUR=0            # UTC (Forex: 0 = Sunday open)
-MARKET_CLOSE_HOUR=22          # UTC (Forex: 22 = Friday close)
-
-# Risk
-MAX_RISK_PER_TRADE_PCT=1.0
-DEFAULT_RISK_REWARD_RATIO=2.0
-CONFIDENCE_THRESHOLD=0.75
-
-# Logging
-LOG_LEVEL=INFO
-LOG_TO_FILE=true
-LOG_FILE_PATH=./logs/trader_ai.log
-```
+### 5.5 Rewrites
+- Full rewrites are high-risk and MUST NOT be proposed unless incremental improvement is demonstrably insufficient.
+- If a rewrite is justified, it MUST be scoped, staged, and accompanied by a parallel-run or migration strategy.
+- Rewrites MUST reproduce all existing behavior unless explicitly told to exclude specific cases.
 
 ---
 
-## 8. Project Structure
+## 6. Testing & Reliability
 
-```
-trader-ai/
-├── AGENTS.md                          # This file
-├── ORCHESTRATOR_PROMPT.md             # System prompt for orchestrator
-├── .env
-├── pyproject.toml
-├── main.py                            # Entry point: starts scheduler + graph
-├── config.py                          # Load env, global settings
-│
-├── graph/
-│   ├── __init__.py
-│   ├── workflow.py                    # LangGraph StateGraph definition
-│   ├── state.py                       # TraderState TypedDict
-│   ├── nodes.py                       # All agent node functions
-│   └── routers.py                     # Conditional edge routers
-│
-├── agents/
-│   ├── __init__.py
-│   ├── orchestrator.py                # Orchestrator agent + prompt
-│   ├── data_collector.py
-│   ├── technical_analyst.py
-│   ├── news_analyst.py
-│   ├── strategy_evaluator.py
-│   ├── risk_manager.py
-│   ├── trade_executor.py
-│   └── scheduler.py
-│
-├── mcp_servers/
-│   ├── tradingview_server/
-│   │   ├── server.py
-│   │   ├── tv_wrapper.py
-│   │   ├── models.py
-│   │   └── tools.py
-│   └── mt5_server/
-│       ├── server.py
-│       ├── mt5_wrapper.py
-│       ├── models.py
-│       └── tools.py
-│
-├── prompts/
-│   ├── orchestrator.md
-│   ├── technical_analyst.md
-│   ├── news_analyst.md
-│   ├── strategy_evaluator.md
-│   ├── risk_manager.md
-│   └── trade_executor.md
-│
-├── utils/
-│   ├── __init__.py
-│   ├── logger.py
-│   ├── notifications.py               # Telegram/email alerts
-│   └── formatters.py                  # Format MT5 data for LLM consumption
-│
-└── tests/
-    ├── test_mt5_wrapper.py
-    ├── test_tv_wrapper.py
-    ├── test_agents.py
-    └── test_workflow.py
-```
+### 6.1 Test Coverage Requirements
+- All new logic MUST be accompanied by tests that verify its correctness.
+- Tests MUST cover the primary success path, known failure paths, and critical edge cases.
+- MUST NOT introduce untested code into production-facing modules.
+
+### 6.2 Test Design
+- Tests MUST be deterministic. Flaky tests are defects and MUST be fixed, not skipped.
+- Tests MUST be independent of each other. Shared mutable state between tests is prohibited.
+- Each test MUST verify exactly one behavior or outcome.
+- Tests MUST NOT rely on execution order, timing, or external system availability unless explicitly designed for integration testing.
+
+### 6.3 Edge Cases
+- MUST explicitly reason about: empty inputs, null/absent values, boundary conditions, maximum/minimum values, and concurrent access.
+- All identified edge cases MUST have explicit handling in logic and corresponding test coverage.
+- Assumptions about input validity MUST be enforced at system boundaries, not assumed internally.
+
+### 6.4 Regression Prevention
+- Any bug fix MUST be accompanied by a test that reproduces the original defect.
+- Tests MUST remain in the codebase permanently as regression guards.
+
+### 6.5 Reliability Expectations
+- Systems MUST degrade gracefully under partial failure rather than failing catastrophically.
+- Resource exhaustion, timeout conditions, and dependency unavailability MUST be handled explicitly.
 
 ---
 
-## 9. Key Design Principles
+## 7. Error Handling & Observability
 
-1. **Human-in-the-Loop (Optional):** Before any live execution, add `interrupt_before=["trade_executor"]` in LangGraph to require human approval.
-2. **Paper Trading First:** Always run with `MT5_DEMO=true` before going live.
-3. **Single Execution per Cycle:** The system executes at most ONE trade per analysis cycle to prevent overtrading.
-4. **Missing Indicator Awareness:** The system is explicitly aware that only 3/4 timing indicators are available and factors this into confidence scoring.
-5. **No Hallucinated Trades:** The Trade Executor agent MUST use exact values from `risk_assessment` — no independent decisions.
-6. **Stateless Agents, Stateful Graph:** Individual agents are stateless; all context flows through `TraderState`.
-7. **Deterministic Scheduler:** The scheduler does NOT use an LLM — it uses fixed rules based on state outcomes.
+### 7.1 Error Handling Philosophy
+- Errors MUST be handled at the appropriate layer — not suppressed silently.
+- MUST NOT swallow exceptions or errors without logging and intentional handling.
+- Error handling logic MUST be as deliberate and tested as business logic.
+- MUST distinguish between recoverable errors (handled gracefully) and unrecoverable errors (fail fast with context).
+
+### 7.2 Failure Propagation
+- Errors MUST carry sufficient context to identify origin, cause, and state at the time of failure.
+- Error messages MUST be actionable — they MUST tell an operator what happened and where.
+- MUST NOT propagate raw internal errors to external consumers. Translate errors at system boundaries.
+
+### 7.3 Logging Philosophy
+- Logs MUST be structured, consistent, and machine-parseable and readable by humans.
+- Every log entry MUST include: a timestamp, severity level, source context, and a descriptive message.
+- MUST NOT log sensitive data (credentials, tokens, personally identifiable information).
+- Log verbosity MUST be calibrated to environment: diagnostic detail in development, signal-focused in production.
+- Logs MUST capture state transitions, not just final outcomes.
+
+### 7.4 Observability
+- Systems MUST emit sufficient signals (logs, metrics, traces) to diagnose failures without modifying code.
+- Critical operations MUST be instrumented with measurable outcomes.
+- MUST NOT build systems where failure is silent or observable only through side effects.
+
+### 7.5 Debuggability
+- Code MUST be written so that any failure can be reproduced and diagnosed from available output alone.
+- State that influences behavior MUST be loggable and inspectable.
+- Debugging MUST NOT require attaching a live debugger to a production system as the only path to diagnosis.
+
+---
+
+## 8. Security & Safety
+
+### 8.1 Secure by Default
+- All system components MUST default to the most restrictive, secure configuration.
+- Permissive behavior MUST be explicitly enabled — never enabled by default.
+- Security controls MUST NOT be disabled or bypassed for convenience.
+
+### 8.2 Input Validation
+- ALL external input MUST be validated at the point of entry into the system.
+- Validation MUST be explicit, not inferred. Trust boundaries MUST be clearly identified.
+- MUST NOT pass unvalidated input to internal logic, data stores, or downstream systems.
+- Input MUST be validated for: type, format, length, range, and permissible values.
+
+### 8.3 Principle of Least Privilege
+- Every component, process, or actor MUST operate with the minimum permissions required for its task.
+- Access MUST be scoped to what is needed — not what is convenient.
+- MUST NOT grant broad permissions to resolve narrow access failures.
+
+### 8.4 Sensitive Data Handling
+- Sensitive data MUST be identified at design time and handled with explicit controls throughout its lifecycle.
+- MUST NOT store, log, or transmit sensitive data unless required and explicitly authorized.
+- Sensitive data MUST NOT appear in error messages, logs, stack traces, or debugging output.
+
+### 8.5 Dependency Safety
+- External dependencies MUST be evaluated for security posture before introduction.
+- MUST NOT introduce dependencies with known critical vulnerabilities.
+- Dependency versions MUST be pinned and managed explicitly.
+
+### 8.6 Failure Safety
+- System failures MUST default to a safe state. MUST NOT fail into an open or permissive state.
+- Authorization checks MUST fail closed — deny on error, not allow.
+
+---
+
+## 9. Performance & Efficiency
+
+### 9.1 Avoid Premature Optimization
+- MUST NOT optimize code before correctness and clarity have been established.
+- Performance improvements MUST be justified by measurement, not speculation.
+- Optimization that introduces complexity MUST be documented with the benchmark that justifies it.
+
+### 9.2 Resource Awareness
+- MUST explicitly account for memory, compute, I/O, and concurrency in all design decisions.
+- Resources acquired MUST be released deterministically. Resource leaks are defects.
+- MUST NOT assume unbounded resource availability. Design for finite, constrained environments.
+
+### 9.3 Algorithmic Efficiency
+- MUST select algorithms and data structures appropriate for the scale of the problem.
+- Algorithmic complexity (time and space) MUST be explicitly considered for all data-processing logic.
+- MUST NOT introduce quadratic or worse complexity on unbounded input sets without explicit justification.
+
+### 9.4 I/O & Latency
+- Network calls, disk operations, and inter-process communication MUST be treated as expensive.
+- MUST NOT make blocking I/O calls in latency-sensitive paths without justification.
+- Batching, caching, and asynchronous patterns MUST be considered for high-frequency I/O.
+
+### 9.5 Scalability Floors
+- Systems MUST NOT be designed with hard-coded limits that prevent scaling unless those limits are intentional and documented.
+- Stateful designs MUST account for distribution and failover.
+
+---
+
+## 10. Communication Rules
+
+### 10.1 Decision Explanation
+- The agent MUST explain every non-trivial decision in plain language before or alongside implementation.
+- Explanations MUST cover: what was done, why it was chosen, and what alternatives were considered.
+- MUST NOT implement a solution and expect the reviewer to reverse-engineer the rationale.
+
+### 10.2 Tradeoff Presentation
+- When multiple valid approaches exist, MUST present the tradeoffs clearly and concisely.
+- Tradeoff analysis MUST include: correctness, complexity, performance, maintainability, and risk.
+- MUST NOT present only one option when a genuine tradeoff exists.
+- MUST NOT advocate for a specific option based on personal preference. Recommendations MUST be grounded in stated requirements.
+
+### 10.3 Clarification Protocol
+- MUST ask for clarification when: requirements are ambiguous, multiple interpretations exist, or the requested change carries significant risk.
+- MUST NOT proceed on ambiguous requirements with silent assumptions. Assumptions MUST be stated explicitly.
+- Clarifying questions MUST be specific and minimal — MUST NOT ask for information that can be reasonably inferred.
+- MUST NOT block progress on trivial ambiguity. State the assumption and proceed when the risk is low.
+
+### 10.4 Confidence & Uncertainty
+- MUST explicitly signal uncertainty when it exists. MUST NOT present uncertain conclusions as definitive.
+- When confidence is partial, MUST state what is known, what is assumed, and what requires verification.
+- MUST NOT fabricate specifics (function names, behaviors, file locations) when not directly observed.
+
+### 10.5 Scope Communication
+- MUST explicitly state what is in scope and out of scope for each task before beginning.
+- If a task requires changes beyond the stated scope to be correct or safe, MUST flag this before acting.
+- MUST NOT silently expand scope.
+
+### 10.6 Status & Progress
+- For multi-step tasks, MUST communicate the plan before execution and progress at meaningful checkpoints.
+- If a task cannot be completed as requested, MUST state why clearly and propose an alternative path.
+
+---
+
+## 11. Anti-Patterns to Avoid
+
+The following patterns are explicitly prohibited. The agent MUST NOT introduce them and MUST flag their presence in existing code when encountered.
+
+### 11.1 Overengineering
+- Introducing abstractions, patterns, or layers in anticipation of hypothetical future requirements.
+- Building for imagined scale that does not exist and may never exist.
+- Applying enterprise design patterns to simple, bounded problems.
+
+### 11.2 Hidden Side Effects
+- Functions or methods that modify state beyond their declared scope without making this explicit.
+- Operations that produce observable side effects not reflected in their interface or contract.
+- Logic that behaves differently based on undeclared external state.
+
+### 11.3 Tight Coupling
+- Modules that directly depend on the internal implementation details of other modules.
+- Systems where changing one component requires changes to multiple unrelated components.
+- Logic that cannot be tested without instantiating large portions of the system.
+
+### 11.4 Magic Behavior
+- Behavior driven by implicit conventions, naming patterns, or framework auto-wiring that cannot be traced through the code.
+- Configuration that silently changes behavior without surfacing the dependency.
+- Any outcome that cannot be fully explained by reading the relevant code.
+
+### 11.5 God Objects & Modules
+- Single modules or components that accumulate responsibility for unrelated concerns.
+- Entry points that contain business logic, data access, and coordination logic together.
+
+### 11.6 Primitive Obsession
+- Representing domain concepts using raw primitive types when a named type or structure would convey intent and enforce constraints.
+
+### 11.7 Inconsistency
+- Solving the same problem in different ways in different parts of the codebase without justification.
+- Using inconsistent naming, structure, or error handling patterns across equivalent constructs.
+
+### 11.8 Silent Failures
+- Catching errors and continuing execution as if the error did not occur.
+- Returning default or zero values on failure without signaling that failure occurred.
+- Logging an error but not handling it appropriately.
+
+### 11.9 Premature Generalization
+- Parameterizing or abstracting logic before there are two or more confirmed concrete use cases.
+- Creating extension points for variation that does not yet exist.
+
+### 11.10 Undifferentiated Complexity
+- Accumulating complexity without tracking, reviewing, or reducing it over time.
+- Treating technical debt as a permanent fixture rather than an active liability.
+
+---
+
+## Appendix: Rule Severity Reference
+
+| Keyword      | Meaning                                                                 |
+|--------------|-------------------------------------------------------------------------|
+| MUST         | Mandatory. Violation constitutes a defect requiring correction.         |
+| MUST NOT     | Explicitly prohibited. Presence constitutes a defect.                  |
+| SHOULD       | Strongly recommended. Deviation requires documented justification.      |
+| SHOULD NOT   | Strongly discouraged. Inclusion requires documented justification.      |
+| MAY          | Optional. Permitted but not required.                                   |
+
+---
+
+*This document is a living standard. All updates MUST be versioned, reviewed, and approved. No agent or automated process MUST modify this document without explicit human authorization.*
