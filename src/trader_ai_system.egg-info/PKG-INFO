@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: trader-ai-system
+Version: 0.1.0.dev0
+Summary: Fully autonomous multi-agent trading system using LangGraph
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: langchain>=1.2.15
+Requires-Dist: metatrader5>=5.0.5735
+Requires-Dist: pydantic>=2.12.5
+Requires-Dist: pydantic-settings>=2.13.1
+Requires-Dist: rich>=14.3.3
+
+# AutoTrader
+
+## Architecture
+
+![Architecture Diagram](Architecture-diagram.png)

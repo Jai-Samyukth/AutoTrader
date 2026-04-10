@@ -9,12 +9,16 @@ dependencies = [
     "metatrader5>=5.0.5735",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
+    "rich>=14.3.3",
 ]
-
+[project.scripts]
+trade-bot = "auto_trader.main:main"
 
 [dependency-groups]
 dev = ["pytest>=9.0.3", "ruff>=0.15.9"]
 
+[tool.uv]
+package = true
 
 [tool.setuptools.packages.find]
 where = ["src"]

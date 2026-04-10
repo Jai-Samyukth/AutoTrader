@@ -1,0 +1,2 @@
+[console_scripts]
+trade-bot = auto_trader.main:main
