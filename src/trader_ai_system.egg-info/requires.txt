@@ -1,5 +1,14 @@
 langchain>=1.2.15
+langchain-anthropic>=1.4.0
+langchain-openai>=1.1.12
+langgraph>=1.1.6
 metatrader5>=5.0.5735
 pydantic>=2.12.5
 pydantic-settings>=2.13.1
 rich>=14.3.3
+requests>=2.33.1
+yfinance>=1.2.1
+pandas>=3.0.2
+tradingview-ta>=3.3.0
+apscheduler>=3.11.2
+python-dotenv>=1.2.2

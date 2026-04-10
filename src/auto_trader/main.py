@@ -1,37 +1,63 @@
-from auto_trader.core.meta_trader.life_cycle import (
-    initialize_mt5,
-    login_mt5,
-    shutdown_mt5,
-)
+"""Main entry point for the trading bot."""
+
+import logging
+import sys
+
+from auto_trader.utils.logging import setup_logging
+from auto_trader.orchestration.scheduler import TradingScheduler
+from auto_trader.config import config
+
+logger = logging.getLogger(__name__)
 
 
-def main():
-    import MetaTrader5 as mt5
+def main() -> None:
+    """Main entry point."""
+    # Setup logging
+    setup_logging()
 
-    # display data on the MetaTrader 5 package
-    print("MetaTrader5 package author: ", mt5.__author__)
-    print("MetaTrader5 package version: ", mt5.__version__)
+    logger.info("=" * 60)
+    logger.info("AutoTrader - Autonomous Trading System")
+    logger.info("=" * 60)
+    logger.info(f"LLM Provider: {config.llm_provider}")
+    logger.info(f"LLM Model: {config.llm_model}")
+    logger.info(f"Symbols: {', '.join(config.symbols)}")
+    logger.info(f"Timeframes: {', '.join(config.timeframes)}")
+    logger.info(f"Paper Trading: {config.paper_trading_mode}")
+    logger.info(f"Max Risk per Trade: {config.max_risk_per_trade_pct}%")
+    logger.info(f"Confidence Threshold: {config.confidence_threshold}")
+    logger.info("=" * 60)
 
-    # establish connection to the MetaTrader 5 terminal
-    if not mt5.initialize():
-        print("initialize() failed, error code =", mt5.last_error())
-        quit()
+    # Validate configuration
+    if config.is_anthropic and not config.anthropic_api_key:
+        logger.error("ANTHROPIC_API_KEY not set")
+        sys.exit(1)
 
-    # attempt to enable the display of the GBPUSD in MarketWatch
-    selected = mt5.symbol_select("GBPUSD.m", True)
-    if not selected:
-        print("Failed to select GBPUSD")
-        mt5.shutdown()
-        quit()
+    if config.is_openai and not config.openai_api_key:
+        logger.error("OPENAI_API_KEY not set")
+        sys.exit(1)
 
-    # display the last GBPUSD tick
-    lasttick = mt5.symbol_info_tick("GBPUSD")
-    print(lasttick)
-    # display tick field values in the form of a list
-    print('Show symbol_info_tick("GBPUSD")._asdict():')
-    symbol_info_tick_dict = mt5.symbol_info_tick("GBPUSD")._asdict()
-    for prop in symbol_info_tick_dict:
-        print("  {}={}".format(prop, symbol_info_tick_dict[prop]))
+    # Start scheduler
+    scheduler = TradingScheduler()
 
-    # shut down connection to the MetaTrader 5 terminal
-    mt5.shutdown()
+    try:
+        # Check if running in test mode
+        if "--once" in sys.argv:
+            logger.info("Running in test mode (single cycle)")
+            scheduler.run_once()
+        else:
+            logger.info("Starting continuous trading mode")
+            scheduler.start()
+
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user")
+        scheduler.stop()
+
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+    logger.info("AutoTrader stopped")
+
+
+if __name__ == "__main__":
+    main()

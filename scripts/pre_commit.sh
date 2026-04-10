@@ -1,6 +1,17 @@
 #!/usr/bin/bash
-echo "Printing out the requirements.txt and storing it in files."
+# Pre-commit checks and requirements export
 
+set -e
+
+echo "📦 Exporting requirements..."
 uv export --no-hashes > requirements.txt
-uv export --no-hashes --no-group dev > requirements.dev.txt
+uv export --no-hashes --only-group dev > requirements.dev.txt
+
+echo "🔍 Running linter..."
+uv run ruff check src/ tests/
+
+echo "🧪 Running tests..."
+uv run pytest tests/ -v
+
+echo "✅ Pre-commit checks passed!"
 
