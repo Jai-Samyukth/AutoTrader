@@ -6,12 +6,14 @@ Production-grade autonomous trading bot using Smart Money Concepts (SMC), multi-
 
 - **Multi-Timeframe Analysis**: Weekly → 4H → 1H → 15m trend alignment
 - **Smart Money Concepts**: BOS, CHoCH, Order Blocks, FVG, Liquidity zones
-- **Technical Indicators**: RSI, MACD, EMA, ADX, Bollinger Bands, Supertrend
-- **LLM Decision Engine**: Claude/GPT-powered trade analysis
+- **Technical Indicators**: RSI, MACD, EMA, ADX, Bollinger Bands, Supertrend (via TradingView-TA)
+- **LLM Decision Engine**: Claude/GPT-powered trade analysis with structured output
+- **LangGraph Workflow**: State machine for decision orchestration
+- **MCP Integration**: MetaTrader 5 via Model Context Protocol tools
 - **Risk Management**: Position sizing, SL/TP calculation, daily limits
 - **News Filtering**: Avoid trading during high-impact events
 - **Paper Trading**: Test strategies without real money
-- **MetaTrader 5 Integration**: Direct execution via HTTP API
+- **MetaTrader 5 Integration**: Direct execution via MCP HTTP API
 
 ## Architecture
 
@@ -66,7 +68,11 @@ Production-grade autonomous trading bot using Smart Money Concepts (SMC), multi-
 ### Prerequisites
 
 - Python 3.11+
-- MetaTrader 5 with HTTP MCP server running on `http://localhost:8001`
+- **MetaTrader 5 MCP Server** running on `http://localhost:8001`
+  - See [MetaTrader MCP Server Setup](https://github.com/ariadng/metatrader-mcp-server)
+  - Install: `git clone https://github.com/ariadng/metatrader-mcp-server && cd metatrader-mcp-server && npm install`
+  - Configure: Edit `.env` with MT5 credentials
+  - Start: `npm start`
 - Anthropic or OpenAI API key
 
 ### Setup
@@ -226,25 +232,42 @@ src/auto_trader/
 ├── config.py              # Configuration management
 ├── main.py                # Entry point
 ├── data/                  # Data fetching
-│   ├── mt5_client.py
-│   └── market_data.py
+│   ├── mt5_client.py      # MCP tools for MetaTrader 5
+│   └── market_data.py     # TradingView-TA integration
 ├── features/              # Feature extraction
-│   ├── smc.py
-│   └── news.py
+│   ├── smc.py             # Smart Money Concepts
+│   └── news.py            # News filtering
 ├── decision/              # LLM decision making
-│   ├── workflow.py
-│   ├── context.py
-│   └── llm.py
+│   ├── workflow.py        # LangGraph state machine
+│   ├── context.py         # Context builder
+│   └── llm.py             # LLM initialization
 ├── execution/             # Trade execution
-│   └── trade_executor.py
+│   └── trade_executor.py  # Order placement
 ├── orchestration/         # Bot coordination
-│   ├── bot.py
-│   └── scheduler.py
+│   ├── bot.py             # Main coordinator
+│   └── scheduler.py       # Automated scheduling
 ├── domain/                # Domain models
-│   └── models.py
+│   └── models.py          # Pydantic models
 └── utils/                 # Utilities
-    └── logging.py
+    └── logging.py         # Logging setup
 ```
+
+### Key Technologies
+
+- **LangChain**: LLM framework with structured output
+- **LangGraph**: State machine workflow orchestration
+- **TradingView-TA**: Technical indicator library
+- **MCP Tools**: MetaTrader 5 integration via @tool decorators
+- **Pydantic**: Data validation and settings
+- **APScheduler**: Automated scheduling
+
+### MCP Integration
+
+See [MCP Integration Guide](docs/MCP_INTEGRATION.md) for detailed documentation on:
+- MetaTrader MCP Server setup
+- LangChain tool usage
+- TradingView-TA integration
+- LangGraph workflow patterns
 
 ### Testing
 

@@ -1,17 +1,18 @@
 """LangGraph workflow for trading decisions."""
 
+import json
 import logging
-from typing import Any, TypedDict
+from typing import Any
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import SystemMessage, HumanMessage
+from typing_extensions import TypedDict
 
 from auto_trader.config import config
-from auto_trader.decision.llm import get_llm
+from auto_trader.decision.llm import create_structured_llm
 from auto_trader.domain.models import (
     Decision,
     TradingDecision,
-    TradeDirection,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,11 @@ class TradingWorkflow:
 
     def __init__(self):
         """Initialize trading workflow."""
-        self.llm = get_llm()
+        # Use structured output for reliable JSON parsing
+        self.llm = create_structured_llm(TradingDecision)
         self.graph = self._build_graph()
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self) -> Any:
         """Build the LangGraph workflow."""
         workflow = StateGraph(WorkflowState)
 
@@ -43,7 +45,7 @@ class TradingWorkflow:
         workflow.add_node("validate", self._validate_node)
 
         # Add edges
-        workflow.set_entry_point("analyze")
+        workflow.add_edge(START, "analyze")
         workflow.add_edge("analyze", "decide")
         workflow.add_edge("decide", "validate")
         workflow.add_edge("validate", END)
@@ -71,7 +73,7 @@ class TradingWorkflow:
         return state
 
     def _decide_node(self, state: WorkflowState) -> WorkflowState:
-        """Make trading decision using LLM."""
+        """Make trading decision using LLM with structured output."""
         logger.info("Making trading decision...")
 
         context = state["context"]
@@ -81,17 +83,14 @@ class TradingWorkflow:
         user_prompt = self._build_user_prompt(context)
 
         try:
-            # Call LLM
+            # Call LLM with structured output
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
             ]
 
-            response = self.llm.invoke(messages)
-            decision_text = response.content
-
-            # Parse decision (simplified - in production use structured output)
-            decision = self._parse_decision(decision_text, context)
+            # LLM returns structured TradingDecision object
+            decision = self.llm.invoke(messages)
 
             state["decision"] = decision
             logger.info(f"Decision: {decision.decision} - {decision.confidence_reason}")
@@ -122,10 +121,10 @@ class TradingWorkflow:
 
         # Validate against config thresholds
         if decision.decision == Decision.EXECUTE:
-            if decision.total_score < config.confidence_threshold:
+            if decision.total_score < config.confidence_threshold * 100:
                 logger.warning(
                     f"Score {decision.total_score} below threshold "
-                    f"{config.confidence_threshold}, changing to WATCH"
+                    f"{config.confidence_threshold * 100}, changing to WATCH"
                 )
                 decision.decision = Decision.WATCH
 
@@ -149,77 +148,48 @@ Your task is to analyze market data and make trading decisions based on:
 4. News sentiment and impact
 5. Risk management rules
 
-You MUST output a JSON decision with:
-- decision: "EXECUTE", "WATCH", or "SKIP"
-- direction: "BUY" or "SELL" (if EXECUTE)
-- phase1_score: Higher timeframe bias score (0-100)
-- phase2_score: Entry quality score (0-100)
-- total_score: Combined score (0-100)
-- sl_pips: Stop loss in pips
-- tp_pips: Take profit in pips
-- rr_ratio: Risk/reward ratio
-- confidence_reason: Detailed explanation
-- next_check_minutes: When to re-evaluate
-- next_check_reason: Why this timing
-
 Scoring Rules:
-Phase 1 (Bias + Structure): Higher TF alignment, BOS/CHoCH direction, trend strength
-Phase 2 (Entry Quality): OB/FVG presence, liquidity sweep, indicator confirmation
+Phase 1 (Bias + Structure) - 0-100 points:
+- Higher timeframe alignment (Weekly/4H bullish or bearish): 30 pts
+- BOS/CHoCH direction matches higher TF: 20 pts
+- Trend strength (ADX > 25, EMA alignment): 20 pts
+- Key levels identified (support/resistance): 15 pts
+- News alignment with technical: 15 pts
 
-DO NOT EXECUTE if:
-- RR < 1.5
-- total_score < 75
-- High-impact news within 60 minutes
-- Conflicting signals across timeframes"""
+Phase 2 (Entry Quality) - 0-100 points:
+- Order Block present and active (not mitigated): 30 pts
+- Fair Value Gap present and unfilled: 25 pts
+- Liquidity sweep detected: 20 pts
+- RSI/MACD confirmation: 15 pts
+- Entry at optimal level: 10 pts
+
+Total Score: (Phase1 + Phase2) / 2
+
+Decision Rules:
+- EXECUTE: total_score >= 75, RR >= 1.5, no high-impact news
+- WATCH: 60 <= total_score < 75, monitor for improvement
+- SKIP: total_score < 60 or conflicting signals
+
+Output the decision with all required fields."""
 
     def _build_user_prompt(self, context: dict[str, Any]) -> str:
         """Build user prompt with context."""
-        import json
-
         return f"""Analyze the following market data and make a trading decision:
 
 {json.dumps(context, indent=2, default=str)}
 
-Provide your decision in JSON format."""
-
-    def _parse_decision(
-        self, decision_text: str, context: dict[str, Any]
-    ) -> TradingDecision:
-        """Parse LLM decision output."""
-        import json
-        import re
-
-        # Extract JSON from response
-        json_match = re.search(r"\{.*\}", decision_text, re.DOTALL)
-        if not json_match:
-            raise ValueError("No JSON found in LLM response")
-
-        decision_data = json.loads(json_match.group())
-
-        return TradingDecision(
-            decision=Decision(decision_data.get("decision", "SKIP")),
-            pair=context["market"]["symbol"],
-            direction=(
-                TradeDirection(decision_data["direction"])
-                if decision_data.get("direction")
-                else None
-            ),
-            phase1_score=float(decision_data.get("phase1_score", 0)),
-            phase2_score=float(decision_data.get("phase2_score", 0)),
-            total_score=float(decision_data.get("total_score", 0)),
-            sl_pips=float(decision_data["sl_pips"])
-            if decision_data.get("sl_pips")
-            else None,
-            tp_pips=float(decision_data["tp_pips"])
-            if decision_data.get("tp_pips")
-            else None,
-            rr_ratio=float(decision_data["rr_ratio"])
-            if decision_data.get("rr_ratio")
-            else None,
-            confidence_reason=decision_data.get("confidence_reason", ""),
-            next_check_minutes=int(decision_data.get("next_check_minutes", 15)),
-            next_check_reason=decision_data.get("next_check_reason", ""),
-        )
+Provide your decision with:
+- decision: EXECUTE, WATCH, or SKIP
+- direction: BUY or SELL (if EXECUTE)
+- phase1_score: 0-100 (market context)
+- phase2_score: 0-100 (entry quality)
+- total_score: average of phase1 and phase2
+- sl_pips: stop loss in pips
+- tp_pips: take profit in pips
+- rr_ratio: risk/reward ratio
+- confidence_reason: detailed explanation
+- next_check_minutes: when to re-evaluate
+- next_check_reason: why this timing"""
 
     def run(self, context: dict[str, Any]) -> TradingDecision:
         """Run the workflow."""

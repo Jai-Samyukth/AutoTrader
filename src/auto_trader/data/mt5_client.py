@@ -1,12 +1,10 @@
-"""MetaTrader 5 HTTP client."""
+"""MetaTrader 5 MCP client using LangChain tools."""
 
 import logging
 from decimal import Decimal
 from typing import Any
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from langchain_core.tools import tool
 
 from auto_trader.config import config
 from auto_trader.domain.models import AccountInfo, Position, SymbolInfo
@@ -14,39 +12,208 @@ from auto_trader.domain.models import AccountInfo, Position, SymbolInfo
 logger = logging.getLogger(__name__)
 
 
-class MT5Client:
-    """HTTP client for MetaTrader 5 MCP server."""
+# MCP Tools for MetaTrader 5
+# These tools will be called by LangChain agents
 
+
+@tool
+def mt5_get_account_info() -> dict[str, Any]:
+    """Get MT5 account information including balance, equity, margin, and leverage.
+    
+    Returns:
+        dict: Account information with balance, equity, margin, free_margin, leverage, profit
+    """
+    # This will be handled by the MCP server
+    # The actual implementation connects to MT5 via MCP
+    import requests
+    
+    try:
+        response = requests.get(
+            f"{config.mt5_base_url}/account",
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to get account info: {e}")
+        raise
+
+
+@tool
+def mt5_get_positions(symbol: str = "") -> dict[str, Any]:
+    """Get open positions from MT5.
+    
+    Args:
+        symbol: Optional symbol to filter positions (e.g., "EURUSD")
+    
+    Returns:
+        dict: List of open positions with ticket, symbol, type, volume, prices, profit
+    """
+    import requests
+    
+    try:
+        params = {"symbol": symbol} if symbol else {}
+        response = requests.get(
+            f"{config.mt5_base_url}/positions",
+            params=params,
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to get positions: {e}")
+        raise
+
+
+@tool
+def mt5_get_symbol_info(symbol: str) -> dict[str, Any]:
+    """Get symbol specification from MT5.
+    
+    Args:
+        symbol: Trading symbol (e.g., "EURUSD", "GBPUSD")
+    
+    Returns:
+        dict: Symbol info with digits, point, min/max lot, spread, bid, ask
+    """
+    import requests
+    
+    try:
+        response = requests.get(
+            f"{config.mt5_base_url}/symbol/{symbol}",
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to get symbol info for {symbol}: {e}")
+        raise
+
+
+@tool
+def mt5_place_market_order(
+    symbol: str,
+    action: str,
+    volume: float,
+    sl: float = 0.0,
+    tp: float = 0.0,
+    comment: str = ""
+) -> dict[str, Any]:
+    """Place a market order in MT5.
+    
+    Args:
+        symbol: Trading symbol (e.g., "EURUSD")
+        action: "buy" or "sell"
+        volume: Lot size (e.g., 0.01, 0.1, 1.0)
+        sl: Stop loss price (optional)
+        tp: Take profit price (optional)
+        comment: Order comment (optional)
+    
+    Returns:
+        dict: Order result with ticket number and status
+    """
+    import requests
+    
+    try:
+        payload = {
+            "symbol": symbol,
+            "action": action.lower(),
+            "volume": volume,
+            "comment": comment
+        }
+        
+        if sl > 0:
+            payload["sl"] = sl
+        if tp > 0:
+            payload["tp"] = tp
+        
+        logger.info(f"Placing {action} order: {symbol} {volume} lots")
+        response = requests.post(
+            f"{config.mt5_base_url}/order/market",
+            json=payload,
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to place order: {e}")
+        raise
+
+
+@tool
+def mt5_close_position(ticket: int) -> dict[str, Any]:
+    """Close an open position in MT5.
+    
+    Args:
+        ticket: Position ticket number
+    
+    Returns:
+        dict: Close result with status
+    """
+    import requests
+    
+    try:
+        logger.info(f"Closing position: {ticket}")
+        response = requests.post(
+            f"{config.mt5_base_url}/position/{ticket}/close",
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to close position {ticket}: {e}")
+        raise
+
+
+@tool
+def mt5_modify_position(
+    ticket: int,
+    sl: float = 0.0,
+    tp: float = 0.0
+) -> dict[str, Any]:
+    """Modify stop loss and take profit of an open position.
+    
+    Args:
+        ticket: Position ticket number
+        sl: New stop loss price (optional)
+        tp: New take profit price (optional)
+    
+    Returns:
+        dict: Modification result with status
+    """
+    import requests
+    
+    try:
+        payload = {}
+        if sl > 0:
+            payload["sl"] = sl
+        if tp > 0:
+            payload["tp"] = tp
+        
+        logger.info(f"Modifying position {ticket}: SL={sl}, TP={tp}")
+        response = requests.post(
+            f"{config.mt5_base_url}/position/{ticket}/modify",
+            json=payload,
+            timeout=config.mt5_timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to modify position {ticket}: {e}")
+        raise
+
+
+# Helper class for backward compatibility
+class MT5Client:
+    """MT5 client wrapper using MCP tools."""
+    
     def __init__(self, base_url: str | None = None, timeout: int | None = None):
         """Initialize MT5 client."""
-        self.base_url = base_url or config.mt5_base_url
-        self.timeout = timeout or config.mt5_timeout
-
-        # Configure session with retries
-        self.session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
-
-    def _request(self, method: str, endpoint: str, **kwargs: Any) -> dict[str, Any]:
-        """Make HTTP request with error handling."""
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        try:
-            response = self.session.request(method, url, timeout=self.timeout, **kwargs)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"MT5 API request failed: {e}")
-            raise
-
+        # Configuration is handled by the tools
+        pass
+    
     def get_account_info(self) -> AccountInfo:
         """Get account information."""
-        data = self._request("GET", "/account")
+        data = mt5_get_account_info.invoke({})
         return AccountInfo(
             balance=Decimal(str(data["balance"])),
             equity=Decimal(str(data["equity"])),
@@ -55,12 +222,11 @@ class MT5Client:
             leverage=data["leverage"],
             profit=Decimal(str(data["profit"])),
         )
-
+    
     def get_positions(self, symbol: str | None = None) -> list[Position]:
         """Get open positions."""
-        params = {"symbol": symbol} if symbol else {}
-        data = self._request("GET", "/positions", params=params)
-
+        data = mt5_get_positions.invoke({"symbol": symbol or ""})
+        
         positions = []
         for pos in data.get("positions", []):
             positions.append(
@@ -79,10 +245,10 @@ class MT5Client:
                 )
             )
         return positions
-
+    
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
         """Get symbol specification."""
-        data = self._request("GET", f"/symbol/{symbol}")
+        data = mt5_get_symbol_info.invoke({"symbol": symbol})
         return SymbolInfo(
             symbol=data["symbol"],
             digits=data["digits"],
@@ -95,12 +261,12 @@ class MT5Client:
             bid=Decimal(str(data["bid"])),
             ask=Decimal(str(data["ask"])),
         )
-
+    
     def get_current_price(self, symbol: str) -> tuple[Decimal, Decimal]:
         """Get current bid/ask price."""
         info = self.get_symbol_info(symbol)
         return info.bid, info.ask
-
+    
     def place_market_order(
         self,
         symbol: str,
@@ -111,26 +277,19 @@ class MT5Client:
         comment: str = "",
     ) -> dict[str, Any]:
         """Place market order."""
-        payload = {
+        return mt5_place_market_order.invoke({
             "symbol": symbol,
             "action": "buy" if direction.upper() == "BUY" else "sell",
             "volume": float(volume),
-            "comment": comment,
-        }
-
-        if sl is not None:
-            payload["sl"] = float(sl)
-        if tp is not None:
-            payload["tp"] = float(tp)
-
-        logger.info(f"Placing {direction} order: {symbol} {volume} lots")
-        return self._request("POST", "/order/market", json=payload)
-
+            "sl": float(sl) if sl else 0.0,
+            "tp": float(tp) if tp else 0.0,
+            "comment": comment
+        })
+    
     def close_position(self, ticket: int) -> dict[str, Any]:
         """Close position by ticket."""
-        logger.info(f"Closing position: {ticket}")
-        return self._request("POST", f"/position/{ticket}/close")
-
+        return mt5_close_position.invoke({"ticket": ticket})
+    
     def modify_position(
         self,
         ticket: int,
@@ -138,11 +297,19 @@ class MT5Client:
         tp: Decimal | None = None,
     ) -> dict[str, Any]:
         """Modify position SL/TP."""
-        payload = {}
-        if sl is not None:
-            payload["sl"] = float(sl)
-        if tp is not None:
-            payload["tp"] = float(tp)
+        return mt5_modify_position.invoke({
+            "ticket": ticket,
+            "sl": float(sl) if sl else 0.0,
+            "tp": float(tp) if tp else 0.0
+        })
 
-        logger.info(f"Modifying position {ticket}: SL={sl}, TP={tp}")
-        return self._request("POST", f"/position/{ticket}/modify", json=payload)
+
+# Export MCP tools for use in LangChain agents
+MT5_TOOLS = [
+    mt5_get_account_info,
+    mt5_get_positions,
+    mt5_get_symbol_info,
+    mt5_place_market_order,
+    mt5_close_position,
+    mt5_modify_position,
+]
