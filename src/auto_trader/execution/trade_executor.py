@@ -73,6 +73,9 @@ class TradeExecutor:
         self, decision: TradingDecision, symbol_info: SymbolInfo, account: AccountInfo
     ) -> TradeExecution:
         """Calculate trade execution parameters."""
+        if not decision.direction:
+            raise ValueError("Direction is required for execution calculation")
+        
         # Get current price
         if decision.direction == TradeDirection.BUY:
             entry_price = symbol_info.ask
@@ -129,6 +132,9 @@ class TradeExecutor:
         self, decision: TradingDecision, symbol_info: SymbolInfo, account: AccountInfo
     ) -> TradeResult:
         """Simulate trade execution for paper trading."""
+        if not decision.direction:
+            return TradeResult(success=False, message="No direction specified for paper trade")
+        
         execution = self._calculate_execution(decision, symbol_info, account)
 
         logger.info(

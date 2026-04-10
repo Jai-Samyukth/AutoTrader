@@ -6,7 +6,7 @@ from typing import Any
 
 from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import SystemMessage, HumanMessage
-from typing_extensions import TypedDict
+from pydantic import BaseModel, Field
 
 from auto_trader.config import config
 from auto_trader.decision.llm import create_structured_llm
@@ -18,12 +18,12 @@ from auto_trader.domain.models import (
 logger = logging.getLogger(__name__)
 
 
-class WorkflowState(TypedDict):
+class WorkflowState(BaseModel):
     """State for the trading workflow."""
 
-    context: dict[str, Any]
-    decision: TradingDecision | None
-    error: str | None
+    context: dict[str, Any] = Field(default_factory=dict)
+    decision: TradingDecision | None = None
+    error: str | None = None
 
 
 class TradingWorkflow:
@@ -52,11 +52,11 @@ class TradingWorkflow:
 
         return workflow.compile()
 
-    def _analyze_node(self, state: WorkflowState) -> WorkflowState:
+    def _analyze_node(self, state: WorkflowState) -> dict[str, Any]:
         """Analyze market context."""
         logger.info("Analyzing market context...")
 
-        context = state["context"]
+        context = state.context
 
         # Extract key information for analysis
         symbol = context["market"]["symbol"]
@@ -70,13 +70,13 @@ class TradingWorkflow:
                 f"MACD={indicators.get('macd')}, ADX={indicators.get('adx')}"
             )
 
-        return state
+        return {"context": context, "decision": state.decision, "error": state.error}
 
-    def _decide_node(self, state: WorkflowState) -> WorkflowState:
+    def _decide_node(self, state: WorkflowState) -> dict[str, Any]:
         """Make trading decision using LLM with structured output."""
         logger.info("Making trading decision...")
 
-        context = state["context"]
+        context = state.context
 
         # Build prompt for LLM
         system_prompt = self._build_system_prompt()
@@ -92,13 +92,17 @@ class TradingWorkflow:
             # LLM returns structured TradingDecision object
             decision = self.llm.invoke(messages)
 
-            state["decision"] = decision
+            # Ensure it's a TradingDecision instance
+            if not isinstance(decision, TradingDecision):
+                raise ValueError(f"Expected TradingDecision, got {type(decision)}")
+
             logger.info(f"Decision: {decision.decision} - {decision.confidence_reason}")
+
+            return {"context": context, "decision": decision, "error": None}
 
         except Exception as e:
             logger.error(f"Decision making failed: {e}")
-            state["error"] = str(e)
-            state["decision"] = TradingDecision(
+            error_decision = TradingDecision(
                 decision=Decision.SKIP,
                 pair=context["market"]["symbol"],
                 phase1_score=0.0,
@@ -109,15 +113,19 @@ class TradingWorkflow:
                 next_check_reason="Retry after error",
             )
 
-        return state
+            return {"context": context, "decision": error_decision, "error": str(e)}
 
-    def _validate_node(self, state: WorkflowState) -> WorkflowState:
+    def _validate_node(self, state: WorkflowState) -> dict[str, Any]:
         """Validate decision against risk rules."""
         logger.info("Validating decision...")
 
-        decision = state["decision"]
+        decision = state.decision
         if not decision:
-            return state
+            return {
+                "context": state.context,
+                "decision": decision,
+                "error": state.error,
+            }
 
         # Validate against config thresholds
         if decision.decision == Decision.EXECUTE:
@@ -135,7 +143,7 @@ class TradingWorkflow:
                 )
                 decision.decision = Decision.SKIP
 
-        return state
+        return {"context": state.context, "decision": decision, "error": state.error}
 
     def _build_system_prompt(self) -> str:
         """Build system prompt for LLM."""
@@ -193,15 +201,15 @@ Provide your decision with:
 
     def run(self, context: dict[str, Any]) -> TradingDecision:
         """Run the workflow."""
-        initial_state: WorkflowState = {
-            "context": context,
-            "decision": None,
-            "error": None,
-        }
+        initial_state = WorkflowState(
+            context=context,
+            decision=None,
+            error=None,
+        )
 
         final_state = self.graph.invoke(initial_state)
 
-        if final_state["error"]:
+        if final_state.get("error"):
             logger.error(f"Workflow error: {final_state['error']}")
 
-        return final_state["decision"]
+        return final_state.get("decision")

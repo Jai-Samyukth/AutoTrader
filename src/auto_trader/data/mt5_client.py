@@ -213,7 +213,7 @@ class MT5Client:
     
     def get_account_info(self) -> AccountInfo:
         """Get account information."""
-        data = mt5_get_account_info.invoke({})
+        data = mt5_get_account_info.invoke(input={})  # type: ignore
         return AccountInfo(
             balance=Decimal(str(data["balance"])),
             equity=Decimal(str(data["equity"])),
@@ -225,7 +225,7 @@ class MT5Client:
     
     def get_positions(self, symbol: str | None = None) -> list[Position]:
         """Get open positions."""
-        data = mt5_get_positions.invoke({"symbol": symbol or ""})
+        data = mt5_get_positions.invoke(input={"symbol": symbol or ""})  # type: ignore
         
         positions = []
         for pos in data.get("positions", []):
@@ -248,7 +248,7 @@ class MT5Client:
     
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
         """Get symbol specification."""
-        data = mt5_get_symbol_info.invoke({"symbol": symbol})
+        data = mt5_get_symbol_info.invoke(input={"symbol": symbol})  # type: ignore
         return SymbolInfo(
             symbol=data["symbol"],
             digits=data["digits"],
@@ -277,7 +277,7 @@ class MT5Client:
         comment: str = "",
     ) -> dict[str, Any]:
         """Place market order."""
-        return mt5_place_market_order.invoke({
+        return mt5_place_market_order.invoke(input={  # type: ignore
             "symbol": symbol,
             "action": "buy" if direction.upper() == "BUY" else "sell",
             "volume": float(volume),
@@ -288,7 +288,7 @@ class MT5Client:
     
     def close_position(self, ticket: int) -> dict[str, Any]:
         """Close position by ticket."""
-        return mt5_close_position.invoke({"ticket": ticket})
+        return mt5_close_position.invoke(input={"ticket": ticket})  # type: ignore
     
     def modify_position(
         self,
@@ -297,7 +297,7 @@ class MT5Client:
         tp: Decimal | None = None,
     ) -> dict[str, Any]:
         """Modify position SL/TP."""
-        return mt5_modify_position.invoke({
+        return mt5_modify_position.invoke(input={  # type: ignore
             "ticket": ticket,
             "sl": float(sl) if sl else 0.0,
             "tp": float(tp) if tp else 0.0
