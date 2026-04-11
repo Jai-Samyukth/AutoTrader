@@ -28,3 +28,5 @@ src/trader_ai_system.egg-info/dependency_links.txt
 src/trader_ai_system.egg-info/entry_points.txt
 src/trader_ai_system.egg-info/requires.txt
 src/trader_ai_system.egg-info/top_level.txt
+tests/test_config.py
+tests/test_models.py

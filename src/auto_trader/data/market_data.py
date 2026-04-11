@@ -3,6 +3,7 @@
 from typing import Any
 
 import logging
+import time
 from decimal import Decimal
 
 import yfinance as yf
@@ -11,6 +12,20 @@ from tradingview_ta import TA_Handler, Interval
 from auto_trader.domain.models import IndicatorData, OHLCVData, TimeFrame
 
 logger = logging.getLogger(__name__)
+
+
+def mt5_to_tradingview(symbol: str) -> str:
+    """Convert MT5 symbol format to TradingView format.
+    
+    Args:
+        symbol: MT5 symbol (e.g., 'EURUSD.m', 'GBPUSD.m')
+        
+    Returns:
+        TradingView symbol (e.g., 'FX:EURUSD', 'FX:GBPUSD')
+    """
+    # Remove .m or .M suffix
+    base = symbol.replace(".m", "").replace(".M", "")
+    return f"CRYPTO:{base}"
 
 
 class MarketDataProvider:
@@ -28,52 +43,78 @@ class MarketDataProvider:
         self.cache: dict[str, Any] = {}
 
     def get_indicators(self, symbol: str, timeframe: TimeFrame) -> IndicatorData:
-        """Fetch technical indicators using tradingview-ta."""
-        try:
-            # Convert symbol format (EURUSD -> EUR/USD for TradingView)
-            tv_symbol = f"{symbol[:3]}/{symbol[3:]}" if len(symbol) == 6 else symbol
+        """Fetch technical indicators using tradingview-ta with retry logic."""
+        max_retries = 3
+        retry_delays = [5, 10, 20]  # Exponential backoff: 5s, 10s, 20s
+        
+        for attempt in range(max_retries):
+            try:
+                # Convert MT5 symbol to TradingView format
+                tv_symbol = mt5_to_tradingview(symbol)
+                
+                # Add delay before request to avoid rate limiting
+                if attempt > 0:
+                    delay = retry_delays[attempt - 1]
+                    logger.info(f"⏳ Retry {attempt}/{max_retries} for {symbol} after {delay}s delay")
+                    time.sleep(delay)
+                else:
+                    # Always add 5s delay between requests (increased from 2s)
+                    time.sleep(5)
+                
+                handler = TA_Handler(
+                    symbol=tv_symbol,
+                    screener="crypto",
+                    exchange="CRYPTO",
+                    interval=self.TIMEFRAME_MAP.get(timeframe, Interval.INTERVAL_1_HOUR),
+                )
 
-            handler = TA_Handler(
-                symbol=tv_symbol,
-                screener="forex",
-                exchange="FX_IDC",
-                interval=self.TIMEFRAME_MAP.get(timeframe, Interval.INTERVAL_1_HOUR),
-            )
+                analysis = handler.get_analysis()
+                indicators = analysis.indicators
 
-            analysis = handler.get_analysis()
-            indicators = analysis.indicators
+                return IndicatorData(
+                    symbol=symbol,
+                    timeframe=timeframe.value,
+                    rsi=indicators.get("RSI"),
+                    macd=indicators.get("MACD.macd"),
+                    macd_signal=indicators.get("MACD.signal"),
+                    macd_histogram=indicators.get("MACD.histogram"),
+                    ema_20=indicators.get("EMA20"),
+                    ema_50=indicators.get("EMA50"),
+                    ema_200=indicators.get("EMA200"),
+                    adx=indicators.get("ADX"),
+                    plus_di=indicators.get("ADX+DI"),
+                    minus_di=indicators.get("ADX-DI"),
+                    bb_upper=indicators.get("BB.upper"),
+                    bb_middle=indicators.get("BB.middle"),
+                    bb_lower=indicators.get("BB.lower"),
+                    supertrend=indicators.get("Supertrend"),
+                )
 
-            return IndicatorData(
-                symbol=symbol,
-                timeframe=timeframe.value,
-                rsi=indicators.get("RSI"),
-                macd=indicators.get("MACD.macd"),
-                macd_signal=indicators.get("MACD.signal"),
-                macd_histogram=indicators.get("MACD.histogram"),
-                ema_20=indicators.get("EMA20"),
-                ema_50=indicators.get("EMA50"),
-                ema_200=indicators.get("EMA200"),
-                adx=indicators.get("ADX"),
-                plus_di=indicators.get("ADX+DI"),
-                minus_di=indicators.get("ADX-DI"),
-                bb_upper=indicators.get("BB.upper"),
-                bb_middle=indicators.get("BB.middle"),
-                bb_lower=indicators.get("BB.lower"),
-                supertrend=indicators.get("Supertrend"),
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to fetch indicators for {symbol} {timeframe}: {e}")
-            # Return empty indicator data
-            return IndicatorData(symbol=symbol, timeframe=timeframe.value)
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a 429 rate limit error
+                if "429" in error_msg and attempt < max_retries - 1:
+                    logger.warning(f"⚠️  Rate limit hit for {symbol} {timeframe}, retrying...")
+                    continue
+                else:
+                    logger.error(f"❌ Failed to fetch indicators for {symbol} {timeframe}: {e}")
+                    # Return empty indicator data on final failure
+                    return IndicatorData(symbol=symbol, timeframe=timeframe.value)
+        
+        # If all retries failed
+        logger.error(f"❌ All retries exhausted for {symbol} {timeframe}")
+        return IndicatorData(symbol=symbol, timeframe=timeframe.value)
 
     def get_ohlcv(
         self, symbol: str, timeframe: TimeFrame, periods: int = 100
     ) -> list[OHLCVData]:
         """Fetch OHLCV data using yfinance."""
         try:
+            # Remove .m suffix if present
+            clean_symbol = symbol.replace('.m', '')
+            
             # Convert symbol format (EURUSD -> EURUSD=X for yfinance)
-            yf_symbol = f"{symbol}=X" if len(symbol) == 6 else symbol
+            yf_symbol = f"{clean_symbol}=X" if len(clean_symbol) == 6 else clean_symbol
 
             # Determine interval and period
             interval_map = {

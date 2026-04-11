@@ -2,7 +2,7 @@
 
 ## Overview
 
-AutoTrader integrates with MetaTrader 5 using the Model Context Protocol (MCP) through LangChain tools. This provides a standardized way for the LLM to interact with MT5.
+AutoTrader integrates with MetaTrader 5 using the **direct Python MetaTrader5 package** wrapped as LangChain tools. This provides a standardized way for the LLM to interact with MT5 without requiring a separate MCP server.
 
 ## Architecture
 
@@ -11,14 +11,21 @@ LangChain LLM
     ↓
 LangChain Tools (@tool decorators)
     ↓
-HTTP Requests
+MetaTrader5 Python Package
     ↓
-MetaTrader MCP Server (http://localhost:8001)
-    ↓
-MetaTrader 5 Terminal
+MetaTrader 5 Terminal (running locally)
 ```
 
+## Prerequisites
+
+1. **MetaTrader 5 Terminal** installed and running
+2. **MT5 Account** logged in
+3. **Python MetaTrader5 package** installed (included in requirements.txt)
+4. **MT5 credentials** in `.env` file
+
 ## MCP Tools
+
+All tools connect directly to MT5 via the Python MetaTrader5 package. No separate server needed.
 
 ### 1. Account Information
 
@@ -132,56 +139,46 @@ result = agent.invoke({
 })
 ```
 
-## MetaTrader MCP Server Setup
+## Setup
 
-### Installation
+### 1. Install MetaTrader 5
 
-```bash
-# Clone the MCP server
-git clone https://github.com/ariadng/metatrader-mcp-server.git
-cd metatrader-mcp-server
+Download and install MT5 from your broker or from [MetaQuotes](https://www.metatrader5.com/).
 
-# Install dependencies
-npm install
+### 2. Configure Credentials
 
-# Configure
-cp .env.example .env
-# Edit .env with your MT5 credentials
-```
-
-### Configuration (.env)
+Add your MT5 credentials to `.env`:
 
 ```env
 # MetaTrader 5 Configuration
 MT5_LOGIN=your_account_number
 MT5_PASSWORD=your_password
 MT5_SERVER=your_broker_server
-MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
 
-# Server Configuration
-PORT=8001
-HOST=localhost
+# Examples:
+# MT5_LOGIN=12345678
+# MT5_PASSWORD=YourPassword123
+# MT5_SERVER=MetaQuotes-Demo
+# MT5_SERVER=ICMarkets-Demo
+# MT5_SERVER=JustMarkets-Demo2
 ```
 
-### Start Server
+### 3. Test Connection
 
 ```bash
-# Development mode
-npm run dev
+# Test direct MT5 connection
+bash scripts/test_mt5_connection.sh
 
-# Production mode
-npm start
+# Or run Python test directly
+python scripts/test_mt5_direct.py
 ```
 
-### Verify Server
+### 4. Verify MT5 is Running
 
-```bash
-# Test account endpoint
-curl http://localhost:8001/api/v1/account
-
-# Test symbol endpoint
-curl http://localhost:8001/api/v1/symbol/EURUSD
-```
+Make sure:
+- MT5 terminal is open and running
+- You're logged into your account
+- AutoTrading is enabled (Tools → Options → Expert Advisors → Allow automated trading)
 
 ## TradingView-ta Integration
 
@@ -323,23 +320,25 @@ def call_mt5_tool(tool, params):
 
 ## Troubleshooting
 
-### MCP Server Not Running
-
-```bash
-# Check if server is running
-curl http://localhost:8001/api/v1/account
-
-# If not, start it
-cd metatrader-mcp-server
-npm start
-```
-
 ### MT5 Connection Failed
 
-1. Check MT5 terminal is running
-2. Verify credentials in MCP server .env
-3. Check MT5 allows API connections
-4. Verify firewall settings
+1. **Check MT5 is running**: Open MetaTrader 5 terminal
+2. **Verify login**: Make sure you're logged into your account
+3. **Check credentials**: Verify `.env` has correct MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
+4. **Enable AutoTrading**: Tools → Options → Expert Advisors → Allow automated trading
+5. **Check Python package**: `pip install MetaTrader5`
+
+### "MT5 initialization failed"
+
+- Make sure MT5 terminal is running
+- Try restarting MT5 terminal
+- Check if MT5 is installed in default location
+
+### "Failed to get account info"
+
+- Verify you're logged into MT5
+- Check account credentials in `.env`
+- Make sure account is active and funded
 
 ### Tool Invocation Errors
 
@@ -364,8 +363,8 @@ analysis = handler.get_analysis()
 
 ## References
 
+- [MetaTrader5 Python Package](https://pypi.org/project/MetaTrader5/)
+- [MT5 Python Documentation](https://www.mql5.com/en/docs/python_metatrader5)
 - [TradingView-TA Documentation](https://python-tradingview-ta.readthedocs.io/)
-- [MetaTrader MCP Server](https://github.com/ariadng/metatrader-mcp-server)
 - [LangChain Tools](https://python.langchain.com/docs/modules/agents/tools/)
 - [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [Model Context Protocol](https://modelcontextprotocol.io/)

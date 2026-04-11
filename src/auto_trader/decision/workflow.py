@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from langgraph.graph import StateGraph, END, START
@@ -9,13 +10,55 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from auto_trader.config import config
-from auto_trader.decision.llm import create_structured_llm
+from auto_trader.decision.llm import create_structured_llm, get_llm
 from auto_trader.domain.models import (
     Decision,
     TradingDecision,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def parse_llm_response(text: str) -> dict:
+    """Parse LLM response that may contain JSON wrapped in markdown or malformed.
+    
+    Args:
+        text: Raw LLM response text
+        
+    Returns:
+        Parsed JSON dictionary
+        
+    Raises:
+        ValueError: If JSON cannot be extracted
+    """
+    if not text or not text.strip():
+        raise ValueError("Empty response from LLM")
+    
+    text = text.strip()
+    
+    # Try direct JSON parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Try extracting JSON from markdown code block
+    match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+    
+    # Try finding JSON object boundaries
+    start, end = text.find('{'), text.rfind('}')
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end+1])
+        except json.JSONDecodeError:
+            pass
+    
+    raise ValueError(f"Cannot parse JSON from response: {text[:200]}")
 
 
 class WorkflowState(BaseModel):
@@ -31,8 +74,10 @@ class TradingWorkflow:
 
     def __init__(self):
         """Initialize trading workflow."""
-        # Use structured output for reliable JSON parsing
-        self.llm = create_structured_llm(TradingDecision)
+        # Keep structured LLM for primary path
+        self.structured_llm = create_structured_llm(TradingDecision)
+        # Regular LLM for fallback
+        self.regular_llm = get_llm()
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -73,8 +118,8 @@ class TradingWorkflow:
         return {"context": context, "decision": state.decision, "error": state.error}
 
     def _decide_node(self, state: WorkflowState) -> dict[str, Any]:
-        """Make trading decision using LLM with structured output."""
-        logger.info("Making trading decision...")
+        """Make trading decision using LLM with structured output and fallback."""
+        logger.info("🧠 Making trading decision...")
 
         context = state.context
 
@@ -82,38 +127,56 @@ class TradingWorkflow:
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(context)
 
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+
+        decision = None
+        
+        # Try structured output first (primary path)
         try:
-            # Call LLM with structured output
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
-
-            # LLM returns structured TradingDecision object
-            decision = self.llm.invoke(messages)
-
-            # Ensure it's a TradingDecision instance
-            if not isinstance(decision, TradingDecision):
-                raise ValueError(f"Expected TradingDecision, got {type(decision)}")
-
-            logger.info(f"Decision: {decision.decision} - {decision.confidence_reason}")
-
+            logger.debug("Attempting structured output...")
+            decision = self.structured_llm.invoke(messages)
+            logger.info(f"✅ Decision (structured): {decision.decision} - {decision.confidence_reason[:100]}")
             return {"context": context, "decision": decision, "error": None}
-
         except Exception as e:
-            logger.error(f"Decision making failed: {e}")
+            logger.warning(f"⚠️  Structured output failed: {e}, trying manual parse...")
+        
+        # Fallback: Manual JSON parsing
+        try:
+            logger.debug("Attempting manual JSON parse...")
+            response = self.regular_llm.invoke(messages)
+            # Handle response.content which can be str or list
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            parsed = parse_llm_response(content)
+            decision = TradingDecision(**parsed)
+            logger.info(f"✅ Decision (manual parse): {decision.decision} - {decision.confidence_reason[:100]}")
+            return {"context": context, "decision": decision, "error": None}
+        except Exception as parse_error:
+            logger.error(f"❌ Manual parse failed: {parse_error}, using hardcoded SKIP...")
+        
+        # Ultimate fallback: Hardcoded SKIP decision
+        try:
             error_decision = TradingDecision(
                 decision=Decision.SKIP,
                 pair=context["market"]["symbol"],
+                direction="NONE",
                 phase1_score=0.0,
                 phase2_score=0.0,
                 total_score=0.0,
-                confidence_reason=f"Error: {e}",
+                sl_pips=None,
+                tp_pips=None,
+                rr_ratio=None,
+                confidence_reason=f"LLM parse failed: {str(parse_error)[:200]}",
                 next_check_minutes=15,
-                next_check_reason="Retry after error",
+                next_check_reason="LLM error - retry later",
             )
-
-            return {"context": context, "decision": error_decision, "error": str(e)}
+            logger.warning("⚠️  Using fallback SKIP decision due to LLM errors")
+            return {"context": context, "decision": error_decision, "error": str(parse_error)}
+        except Exception as final_error:
+            logger.error(f"💥 Critical error in decision node: {final_error}")
+            return {"context": context, "decision": None, "error": str(final_error)}
 
     def _validate_node(self, state: WorkflowState) -> dict[str, Any]:
         """Validate decision against risk rules."""
@@ -150,7 +213,7 @@ class TradingWorkflow:
         return """You are an expert quantitative trading analyst specializing in Smart Money Concepts (SMC) and multi-timeframe technical analysis.
 
 Your task is to analyze market data and make trading decisions based on:
-1. Multi-timeframe trend alignment (Weekly → 4H → 1H → 15m)
+1. Multi-timeframe trend alignment (Weekly > 4H > 1H > 15m)
 2. Smart Money Concepts (BOS, CHoCH, Order Blocks, FVG, Liquidity)
 3. Technical indicators (RSI, MACD, EMA, ADX, Bollinger Bands)
 4. News sentiment and impact
@@ -178,7 +241,7 @@ Decision Rules:
 - WATCH: 60 <= total_score < 75, monitor for improvement
 - SKIP: total_score < 60 or conflicting signals
 
-Output the decision with all required fields."""
+IMPORTANT: You MUST respond with ONLY a valid JSON object. No markdown formatting, no ## headers, no explanations outside the JSON. Start with { and end with }."""
 
     def _build_user_prompt(self, context: dict[str, Any]) -> str:
         """Build user prompt with context."""

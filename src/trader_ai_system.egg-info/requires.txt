@@ -12,3 +12,4 @@ pandas>=3.0.2
 tradingview-ta>=3.3.0
 apscheduler>=3.11.2
 python-dotenv>=1.2.2
+loguru>=0.7.3

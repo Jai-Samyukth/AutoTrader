@@ -32,6 +32,29 @@ What it checks:
 
 ## Running the Bot
 
+### `start_mt5_server.sh` / `start_mt5_server.ps1`
+Start the MetaTrader 5 MCP server (REQUIRED before running the bot).
+
+```bash
+# Bash (Git Bash, Linux, macOS)
+bash scripts/start_mt5_server.sh
+
+# PowerShell (Windows)
+.\scripts\start_mt5_server.ps1
+```
+
+**IMPORTANT**: 
+- You MUST start this server before running the trading bot
+- Make sure MetaTrader 5 is running and logged in
+- Server runs on `http://localhost:8001`
+- Keep this terminal open while trading
+- Press Ctrl+C to stop the server
+
+Requirements:
+- `uvx` must be installed (comes with `uv`)
+- MetaTrader 5 must be installed and running
+- MT5 must be logged into a trading account
+
 ### `run_once.sh`
 Run a single analysis cycle (test mode).
 
@@ -174,6 +197,10 @@ Removes:
 bash scripts/install.sh
 bash scripts/validate_env.sh
 
+# Start MT5 MCP server (REQUIRED - keep running in separate terminal)
+bash scripts/start_mt5_server.sh        # Bash
+.\scripts\start_mt5_server.ps1          # PowerShell
+
 # Development workflow
 bash scripts/format.sh      # Format code
 bash scripts/test.sh        # Run tests
@@ -203,8 +230,25 @@ chmod +x scripts/*.sh
 
 ### uv not found
 ```bash
-# Install uv
+# Install uv (includes uvx)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or on Windows PowerShell
+irm https://astral.sh/uv/install.ps1 | iex
+```
+
+### MT5 MCP server not connecting
+```bash
+# 1. Make sure MT5 is running and logged in
+# 2. Start the MCP server in a separate terminal
+bash scripts/start_mt5_server.sh
+
+# 3. Check if server is running
+curl http://localhost:8001/health
+
+# 4. If port 8001 is in use, kill the process
+# Windows: netstat -ano | findstr :8001
+# Linux/Mac: lsof -i :8001
 ```
 
 ### .env not found

@@ -47,6 +47,10 @@ class TradingScheduler:
         logger.info("Starting trading scheduler...")
         self.setup_jobs()
 
+        # Run initial analysis immediately
+        logger.info("Running initial analysis cycle...")
+        self.bot.run_multi_symbol_cycle()
+
         try:
             self.scheduler.start()
         except (KeyboardInterrupt, SystemExit):

@@ -19,6 +19,7 @@ dependencies = [
     "tradingview-ta>=3.3.0",
     "apscheduler>=3.11.2",
     "python-dotenv>=1.2.2",
+    "loguru>=0.7.3",
 ]
 [project.scripts]
 trade-bot = "auto_trader.main:main"

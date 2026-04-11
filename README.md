@@ -2,6 +2,37 @@
 
 Production-grade autonomous trading bot using Smart Money Concepts (SMC), multi-timeframe technical analysis, and LLM-driven decision making.
 
+## 🚀 Quick Start
+
+**New to AutoTrader?** Follow the complete [Startup Guide](docs/STARTUP_GUIDE.md) for step-by-step instructions.
+
+**Quick setup:**
+```bash
+# 1. Install dependencies
+bash scripts/install.sh
+
+# 2. Configure .env with your API keys
+cp .env.example .env
+nano .env
+
+# 3. Terminal 1: Start MT5 MCP server (REQUIRED)
+bash scripts/start_mt5_server.sh
+
+# 4. Terminal 2: Run the bot
+bash scripts/run_once.sh  # Test mode
+bash scripts/run.sh       # Continuous mode
+```
+
+📖 **Documentation:**
+- [Quick Reference](QUICK_REFERENCE.md) - Essential commands and troubleshooting
+- [Startup Guide](docs/STARTUP_GUIDE.md) - Complete setup instructions
+- [MT5 Server Setup](MT5_SERVER_SETUP.md) - MetaTrader server configuration
+- [MT5 Credentials Guide](MT5_CREDENTIALS_GUIDE.md) - How to find and configure MT5 credentials
+- [Scripts Guide](docs/SCRIPTS_GUIDE.md) - All available scripts
+- [System Design](docs/SYSTEM_DESIGN.md) - Architecture details
+- [MCP Integration](docs/MCP_INTEGRATION.md) - MetaTrader integration
+- [LangChain Integration](docs/LANGCHAIN_INTEGRATION.md) - LLM workflow
+
 ## Features
 
 - **Multi-Timeframe Analysis**: Weekly → 4H → 1H → 15m trend alignment

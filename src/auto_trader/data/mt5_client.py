@@ -1,15 +1,36 @@
-"""MetaTrader 5 MCP client using LangChain tools."""
+"""MetaTrader 5 client using direct MT5 Python package."""
 
 import logging
 from decimal import Decimal
 from typing import Any
 
+import MetaTrader5 as mt5
 from langchain_core.tools import tool
 
 from auto_trader.config import config
 from auto_trader.domain.models import AccountInfo, Position, SymbolInfo
 
 logger = logging.getLogger(__name__)
+
+
+# Initialize MT5 connection
+def _ensure_mt5_initialized() -> bool:
+    """Ensure MT5 is initialized and connected."""
+    if not mt5.initialize():
+        logger.error("MT5 initialization failed")
+        return False
+    
+    # Login if credentials are provided
+    if config.mt5_login and config.mt5_password and config.mt5_server:
+        if not mt5.login(
+            login=int(config.mt5_login),
+            password=config.mt5_password,
+            server=config.mt5_server
+        ):
+            logger.error(f"MT5 login failed: {mt5.last_error()}")
+            return False
+    
+    return True
 
 
 # MCP Tools for MetaTrader 5
@@ -23,17 +44,22 @@ def mt5_get_account_info() -> dict[str, Any]:
     Returns:
         dict: Account information with balance, equity, margin, free_margin, leverage, profit
     """
-    # This will be handled by the MCP server
-    # The actual implementation connects to MT5 via MCP
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
-        response = requests.get(
-            f"{config.mt5_base_url}/account",
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        account = mt5.account_info()
+        if account is None:
+            raise RuntimeError(f"Failed to get account info: {mt5.last_error()}")
+        
+        return {
+            "balance": account.balance,
+            "equity": account.equity,
+            "margin": account.margin,
+            "free_margin": account.margin_free,
+            "leverage": account.leverage,
+            "profit": account.profit,
+        }
     except Exception as e:
         logger.error(f"Failed to get account info: {e}")
         raise
@@ -49,17 +75,44 @@ def mt5_get_positions(symbol: str = "") -> dict[str, Any]:
     Returns:
         dict: List of open positions with ticket, symbol, type, volume, prices, profit
     """
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
-        params = {"symbol": symbol} if symbol else {}
-        response = requests.get(
-            f"{config.mt5_base_url}/positions",
-            params=params,
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        # Get positions - pass symbol with .m suffix if needed
+        if symbol:
+            # Try with symbol as-is first
+            positions = mt5.positions_get(symbol=symbol)
+            # If not found and doesn't have .m, try with .m
+            if positions is None or len(positions) == 0:
+                if not symbol.endswith('.m'):
+                    positions = mt5.positions_get(symbol=f"{symbol}.m")
+        else:
+            positions = mt5.positions_get()
+        
+        if positions is None:
+            # Empty tuple is OK, None means error
+            error = mt5.last_error()
+            if error[0] != 1:  # 1 = RET_OK
+                raise RuntimeError(f"Failed to get positions: {error}")
+        
+        result = []
+        for pos in positions:
+            result.append({
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "type": "buy" if pos.type == mt5.ORDER_TYPE_BUY else "sell",
+                "volume": pos.volume,
+                "price_open": pos.price_open,
+                "price_current": pos.price_current,
+                "sl": pos.sl,
+                "tp": pos.tp,
+                "profit": pos.profit,
+                "swap": pos.swap,
+                "commission": pos.commission,
+            })
+        
+        return {"positions": result}
     except Exception as e:
         logger.error(f"Failed to get positions: {e}")
         raise
@@ -75,15 +128,31 @@ def mt5_get_symbol_info(symbol: str) -> dict[str, Any]:
     Returns:
         dict: Symbol info with digits, point, min/max lot, spread, bid, ask
     """
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
-        response = requests.get(
-            f"{config.mt5_base_url}/symbol/{symbol}",
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            raise RuntimeError(f"Failed to get symbol info for {symbol}: {mt5.last_error()}")
+        
+        # Get current tick for bid/ask
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError(f"Failed to get tick for {symbol}: {mt5.last_error()}")
+        
+        return {
+            "symbol": info.name,
+            "digits": info.digits,
+            "point": info.point,
+            "volume_min": info.volume_min,
+            "volume_max": info.volume_max,
+            "volume_step": info.volume_step,
+            "trade_contract_size": info.trade_contract_size,
+            "spread": info.spread,
+            "bid": tick.bid,
+            "ask": tick.ask,
+        }
     except Exception as e:
         logger.error(f"Failed to get symbol info for {symbol}: {e}")
         raise
@@ -111,29 +180,53 @@ def mt5_place_market_order(
     Returns:
         dict: Order result with ticket number and status
     """
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
-        payload = {
+        # Get current price
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise RuntimeError(f"Failed to get tick for {symbol}: {mt5.last_error()}")
+        
+        # Determine order type and price
+        order_type = mt5.ORDER_TYPE_BUY if action.lower() == "buy" else mt5.ORDER_TYPE_SELL
+        price = tick.ask if action.lower() == "buy" else tick.bid
+        
+        # Prepare request
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "action": action.lower(),
             "volume": volume,
-            "comment": comment
+            "type": order_type,
+            "price": price,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": comment or "AutoTrader",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
         
         if sl > 0:
-            payload["sl"] = sl
+            request["sl"] = sl
         if tp > 0:
-            payload["tp"] = tp
+            request["tp"] = tp
         
         logger.info(f"Placing {action} order: {symbol} {volume} lots")
-        response = requests.post(
-            f"{config.mt5_base_url}/order/market",
-            json=payload,
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        result = mt5.order_send(request)
+        
+        if result is None:
+            raise RuntimeError(f"Order send failed: {mt5.last_error()}")
+        
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise RuntimeError(f"Order failed: {result.comment} (code: {result.retcode})")
+        
+        return {
+            "ticket": result.order,
+            "status": "success",
+            "retcode": result.retcode,
+            "comment": result.comment,
+        }
     except Exception as e:
         logger.error(f"Failed to place order: {e}")
         raise
@@ -149,16 +242,56 @@ def mt5_close_position(ticket: int) -> dict[str, Any]:
     Returns:
         dict: Close result with status
     """
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
+        # Get position info
+        position = mt5.positions_get(ticket=ticket)
+        if not position:
+            raise RuntimeError(f"Position {ticket} not found")
+        
+        pos = position[0]
+        
+        # Determine close order type (opposite of position type)
+        order_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        
+        # Get current price
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            raise RuntimeError(f"Failed to get tick for {pos.symbol}: {mt5.last_error()}")
+        
+        price = tick.bid if order_type == mt5.ORDER_TYPE_SELL else tick.ask
+        
+        # Prepare close request
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": pos.volume,
+            "type": order_type,
+            "position": ticket,
+            "price": price,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "AutoTrader close",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
         logger.info(f"Closing position: {ticket}")
-        response = requests.post(
-            f"{config.mt5_base_url}/position/{ticket}/close",
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        result = mt5.order_send(request)
+        
+        if result is None:
+            raise RuntimeError(f"Close order failed: {mt5.last_error()}")
+        
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise RuntimeError(f"Close failed: {result.comment} (code: {result.retcode})")
+        
+        return {
+            "status": "success",
+            "retcode": result.retcode,
+            "comment": result.comment,
+        }
     except Exception as e:
         logger.error(f"Failed to close position {ticket}: {e}")
         raise
@@ -180,23 +313,40 @@ def mt5_modify_position(
     Returns:
         dict: Modification result with status
     """
-    import requests
+    if not _ensure_mt5_initialized():
+        raise RuntimeError("MT5 not initialized")
     
     try:
-        payload = {}
-        if sl > 0:
-            payload["sl"] = sl
-        if tp > 0:
-            payload["tp"] = tp
+        # Get position info
+        position = mt5.positions_get(ticket=ticket)
+        if not position:
+            raise RuntimeError(f"Position {ticket} not found")
+        
+        pos = position[0]
+        
+        # Prepare modify request
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "sl": sl if sl > 0 else pos.sl,
+            "tp": tp if tp > 0 else pos.tp,
+        }
         
         logger.info(f"Modifying position {ticket}: SL={sl}, TP={tp}")
-        response = requests.post(
-            f"{config.mt5_base_url}/position/{ticket}/modify",
-            json=payload,
-            timeout=config.mt5_timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        result = mt5.order_send(request)
+        
+        if result is None:
+            raise RuntimeError(f"Modify order failed: {mt5.last_error()}")
+        
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise RuntimeError(f"Modify failed: {result.comment} (code: {result.retcode})")
+        
+        return {
+            "status": "success",
+            "retcode": result.retcode,
+            "comment": result.comment,
+        }
     except Exception as e:
         logger.error(f"Failed to modify position {ticket}: {e}")
         raise
